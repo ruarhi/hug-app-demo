@@ -3930,6 +3930,23 @@ html[data-account-status="guest"] .share-active-only { display: none; }
 }
 
 /* ---------------------------------------------------------------------------
+   Scroll-aware bottom feather (iPhone)
+   The feather exists to fade a partial row that is scrolled out of view below.
+   Once the list is scrolled to its end — or it doesn't overflow at all — there
+   is nothing left to fade, so retire the feather instead of washing over the
+   last visible row. JS toggles .list-at-bottom on the stable content parent
+   from syncLeaderFade / syncHistoryFade.
+--------------------------------------------------------------------------- */
+.home-content::after,
+.account-content::after {
+  transition: opacity 220ms ease;
+}
+.home-content.list-at-bottom::after,
+.account-content.list-at-bottom::after {
+  opacity: 0;
+}
+
+/* ---------------------------------------------------------------------------
    Collapsed glance cap (iPhone)
    Render-once keeps every row in the DOM (so expand/collapse never rebuilds and
    never flashes). But that let the COLLAPSED list scroll through everyone. Cap

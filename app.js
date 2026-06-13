@@ -3133,8 +3133,12 @@
         if (!list) return;
         const max = Math.max(0, list.scrollHeight - list.clientHeight);
         const top = list.scrollTop;
+        const atBottom = top >= max - 1;
         wrap.classList.toggle("at-top", top <= 1);
-        wrap.classList.toggle("at-bottom", top >= max - 1);
+        wrap.classList.toggle("at-bottom", atBottom);
+        // Mirror onto the stable parent that paints the bottom feather, so the
+        // feather can retire once there is nothing left below to fade.
+        wrap.closest(".account-content")?.classList.toggle("list-at-bottom", atBottom);
       });
     }
 
@@ -3145,8 +3149,12 @@
         if (!list) return;
         const max = Math.max(0, list.scrollHeight - list.clientHeight);
         const top = list.scrollTop;
+        const atBottom = top >= max - 1;
         wrap.classList.toggle("at-top", top <= 1);
-        wrap.classList.toggle("at-bottom", top >= max - 1);
+        wrap.classList.toggle("at-bottom", atBottom);
+        // Mirror onto the stable parent that paints the bottom feather, so the
+        // feather can retire once the list is scrolled to its end.
+        wrap.closest(".home-content")?.classList.toggle("list-at-bottom", atBottom);
       });
     }
 
@@ -4495,6 +4503,7 @@
         wrap.style.setProperty('--leader-window-height', winH + 'px');
         content.classList.add('leader-open');
         plus.setAttribute('aria-label','Hide full leaderboard');
+        try{ list.dispatchEvent(new Event('scroll')); }catch(e){}
       } else {
         content.classList.remove('leader-open');
         content.style.removeProperty('--leader-shift');
