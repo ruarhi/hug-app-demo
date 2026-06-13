@@ -1,0 +1,22 @@
+/* Demo-only overrides for the marketing-site phone mockup.
+   The mockup draws a dynamic island (top) and a home indicator (bottom) over
+   the screen. A desktop browser has no real safe-area insets, so the app's top
+   bar and bottom nav would sit flush and collide with those overlays. Give the
+   embedded app insets that clear them. (Design px — the app scales by --fit.) */
+:root {
+  --safe-top: 48px;
+  --safe-bottom: 30px;
+}
+
+/* Scan screen: a browser has no camera, so the real app drops to its ghosted
+   fallback image (.scanner-fallback) behind the main scan icon. For the demo,
+   show only the clean main scan icon in the window. */
+.screen[data-screen="scan"] .scanner-fallback { display: none !important; }
+
+/* Demo: personal info is fixed sample data — keep it unchangeable. Hide the
+   profile address "edit" button (the address fields are already readonly) and
+   the checkout fields carry the readonly attribute. Stop the text caret too. */
+.screen[data-screen="profile"] .info-edit { display: none !important; }
+.screen[data-screen="profile"] .addr-v,
+.checkout-entry-field,
+.checkout-payment-field { cursor: default; }

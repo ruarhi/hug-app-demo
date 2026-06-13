@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" aria-hidden="true">
+  <g fill="none" stroke="#000" stroke-width="16.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M60 170v-60c0-27.61 22.39-50 50-50h70"/>
+    <path d="M320 60h70c27.61 0 50 22.39 50 50v60"/>
+    <path d="M20 250h460"/>
+    <path d="M60 330v60c0 27.61 22.39 50 50 50h70"/>
+    <path d="M320 440h70c27.61 0 50-22.39 50-50v-60"/>
+  </g>
+</svg>

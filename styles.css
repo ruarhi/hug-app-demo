@@ -1,0 +1,4207 @@
+/* =============================================================================
+   hug — referral-rewards app prototype
+   styles.css  ·  all visual styling + screen-transition choreography
+   -----------------------------------------------------------------------------
+   Organised top-to-bottom as:
+     1. Tokens & resets ............ :root custom properties, box-sizing, fonts
+     2. Phone shell ................ .stage / .phone frame + responsive modes
+     3. Screen system .............. .screen states, fades, drag-peek, nav-switch
+     4. Chrome ..................... .top header, .balance, .logo, .bag-button
+     5. Bottom navigation .......... .bottom-nav + per-screen active states
+     6. Screen content ............. home / qr / scan / settings / impact /
+                                      bag (shop) / checkout / profile / account
+     7. Bag open-close motion ...... the collapsible-mug + render carousel anim
+   Nothing here is generated at runtime; all behaviour lives in app.js.
+   ============================================================================= */
+
+:root {
+  --ink: #050505;
+  --muted: #343434;
+  --row: rgba(235, 235, 235, .5);
+  --row-pending: #fce3e4;
+  --row-pending-stroke: rgba(214, 118, 128, .5);
+  --row-approved: #e3fce4;
+  --row-approved-stroke: rgba(120, 196, 132, .5);
+  --fade: #cfcfcf;
+  --line: #c4c4c4;
+  --brand-a: #eb3d7f;
+  --brand-b: #8e35d7;
+  --settings-motion-ms: 520ms;
+  --bag-motion-ms: 760ms;
+  --bag-exit-ms: 420ms;
+  --bag-icon-fade-ms: 240ms;
+  --account-motion-ms: 760ms;
+  --account-exit-ms: 360ms;
+  --phone-w: 393px;
+  --phone-h: 852px;
+  /* iOS/Android safe areas; 0 on devices/browsers without notches, so the
+     desktop frame keeps the original design spacing exactly. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --page-pad: 38px;
+  --font-ui: "Avenir Next", "Avenir", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-display: "Avenir Next", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-body: var(--font-ui);
+  --box-stroke: rgba(191, 194, 198, .58);
+  --box-drop-shadow:
+    0 1px 2px rgba(10, 12, 16, .038),
+    0 2px 6px rgba(10, 12, 16, .022);
+  --bottom-feather-h: 5px;
+  --scroll-window-gap: 10px;
+  --leader-window-height: 340px;
+  --history-window-height: 340px;
+  --leader-list-bottom-pad: 24px;
+  --history-list-bottom-pad: 24px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #fff;
+  color: var(--ink);
+  font-family: var(--font-ui);
+  letter-spacing: .08em;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+}
+
+body {
+  overflow: hidden;
+}
+
+button {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.stage {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100svh;
+  height: 100dvh;
+  overflow: hidden;
+  background: #fff;
+}
+
+.phone {
+  position: relative;
+  width: 100%;
+  max-width: 480px;          /* on tablets/wide screens, show a centred phone-width column */
+  height: 100svh;
+  height: 100dvh;            /* fill the device like a native app */
+  margin-inline: auto;
+  overflow: hidden;
+  background: #fff;
+  isolation: isolate;
+}
+
+.phone,
+.phone *:not(input):not(textarea) {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.phone input,
+.phone textarea {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  -webkit-touch-callout: default;
+  -webkit-tap-highlight-color: transparent;
+}
+
+::selection {
+  background: transparent;
+  color: inherit;
+}
+
+::-moz-selection {
+  background: transparent;
+  color: inherit;
+}
+
+.phone::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: .22;
+  z-index: 0;
+  background:
+    repeating-linear-gradient(0deg, transparent 0 23px, var(--line) 23px 24px),
+    repeating-linear-gradient(90deg, transparent 0 23px, var(--line) 23px 24px);
+}
+
+/* The app always fills its viewport — the device screen it is placed on —
+   on touch and mouse alike. At the design width (393px) and wider it fills
+   natively, capped by .phone { max-width } and centred on tablets. BELOW the
+   design width, the whole app is uniformly scaled down so padding stays equal
+   on both sides and nothing clips on the right — it still fills the screen
+   edge-to-edge (this is NOT the old centred desktop mock; --fit is set by JS
+   to min(1, viewport-width / design-width)). */
+
+@media (max-width: 392px) {
+  .phone {
+    width: var(--phone-w);                  /* lay out at the 393px design width ... */
+    max-width: none;
+    height: calc(100svh / var(--fit, 1));   /* ... in a proportionally taller canvas, so */
+    height: calc(100dvh / var(--fit, 1));   /*     that after scaling it still fills height */
+    margin-inline: 0;
+    transform: scale(var(--fit, 1));        /* uniform downscale to the real screen width */
+    transform-origin: top left;             /* fill from the top-left corner */
+  }
+}
+
+.screen {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-rows:
+    calc(100px + var(--safe-top))
+    1fr
+    calc(76px + var(--safe-bottom));
+  background: #fff;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateX(var(--screen-x, 0px));
+  transition: transform .28s cubic-bezier(.2, .92, .16, 1), opacity 0s linear;
+  z-index: 1;
+}
+
+.screen.quick-fade-enter,
+.screen.quick-fade-leave {
+  visibility: visible;
+  pointer-events: none !important;
+}
+
+/* Prevent top icon overlap during quick fade; keep bottom icons visible/stable. */
+.phone.quick-fade-mode.hide-enter-chrome .screen.quick-fade-enter .top {
+  opacity: 0;
+}
+
+.phone.nav-switching .top > :not(.logo) {
+  transition: none !important;
+}
+
+.phone.nav-switching .bottom-nav button {
+  transition: none !important;
+}
+
+.phone.nav-switching .screen[data-screen="account"] .bottom-nav button,
+.phone.nav-switching .screen[data-screen="bag"] .bottom-nav button {
+  opacity: .26 !important;
+  transition: none !important;
+}
+
+.phone.bag-account-switch .screen[data-screen="account"] .bottom-nav button,
+.phone.bag-account-switch .screen[data-screen="bag"] .bottom-nav button {
+  opacity: .26 !important;
+  transition: none !important;
+}
+
+.phone.settings-account-switch .screen[data-screen="settings"].active .top > :not(.logo),
+.phone.settings-account-switch .screen[data-screen="account"].active .top > :not(.logo) {
+  opacity: .26 !important;
+  transition: none !important;
+}
+
+.phone.settings-account-switch .screen[data-screen="settings"].active .top .balance,
+.phone.settings-account-switch .screen[data-screen="account"].active .top .balance {
+  opacity: 1 !important;
+  transition: none !important;
+}
+
+.phone.settings-account-switch .screen[data-screen="settings"].active .top .bag-button,
+.phone.settings-account-switch .screen[data-screen="account"].active .top .bag-button {
+  opacity: .26 !important;
+  transition: none !important;
+}
+
+.phone.bag-scan-switch .screen[data-screen="scan"] .top > :not(.logo),
+.phone.bag-scan-switch .screen[data-screen="qr"] .top > :not(.logo) {
+  opacity: .26 !important;
+  transition: none !important;
+}
+
+.phone.bag-scan-switch .screen[data-screen="bag"] .top > :not(.logo) {
+  opacity: .26 !important;
+  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1) !important;
+}
+
+/* Bag -> settings: fade the bag screen chrome (incl. the bag icon) to the settings
+   dim level DURING the exit slide, so it transitions instead of being held opaque
+   by .bag-closing and then snapping to .22 at the screen swap. */
+.phone.bag-to-settings-switch .screen[data-screen="bag"].active .top > :not(.logo),
+.phone.bag-to-settings-switch .screen[data-screen="bag"].active .top .bag-button {
+  opacity: .22 !important;
+  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1) !important;
+}
+
+.phone.bag-to-scan-switch .screen[data-screen="bag"] .top .bag-button,
+.phone.bag-to-qr-switch .screen[data-screen="bag"] .top .bag-button {
+  opacity: .26 !important;
+  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1) !important;
+}
+
+.phone.bag-to-qr-switch .screen[data-screen="qr"].active .bottom-nav {
+  opacity: 1 !important;
+  transition: none !important;
+}
+
+.phone.bag-to-qr-switch .screen[data-screen="qr"].active .bottom-nav button {
+  opacity: .26 !important;
+  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1) !important;
+}
+
+.phone.bag-to-qr-switch .screen[data-screen="qr"].active .bottom-nav button[data-go="qr"] {
+  opacity: 1 !important;
+}
+
+.phone.bag-to-scan-switch.bag-closing .screen[data-screen="bag"].active .bottom-nav button[data-go="scan"],
+.phone.bag-to-settings-switch.bag-closing .screen[data-screen="bag"].active .bottom-nav button[data-go="settings"],
+.phone.bag-to-qr-switch.bag-closing .screen[data-screen="bag"].active .bottom-nav button[data-go="qr"] {
+  opacity: 1 !important;
+  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1) !important;
+}
+
+/* bag -> settings: spin the HELD settings gear on the bag nav during the close, so the
+   visible gear animates 0 -> -90deg in sync with the settings screen's own gear underneath
+   (same transform + --settings-motion-ms used by scan -> settings on the active screen). */
+.phone.bag-to-settings-switch.bag-closing .screen[data-screen="bag"].active .bottom-nav button[data-go="settings"] img {
+  transform: rotate(-90deg);
+  transition: transform var(--settings-motion-ms) cubic-bezier(.24, .86, .2, 1);
+  transform-origin: 49.63% 50.44%;
+}
+
+.phone.bag-from-scan-switch.nav-switching .screen[data-screen="bag"] .top > :not(.logo),
+.phone.bag-from-scan-switch .screen[data-screen="bag"] .top > :not(.logo) {
+  opacity: .26 !important;
+  transition: opacity var(--bag-motion-ms) cubic-bezier(.22, .82, .2, 1) !important;
+}
+
+.phone.bag-from-scan-switch.nav-switching .screen[data-screen="bag"] .top .bag-button,
+.phone.bag-from-scan-switch .screen[data-screen="bag"] .top .bag-button {
+  opacity: 1 !important;
+  transition: opacity var(--bag-motion-ms) cubic-bezier(.22, .82, .2, 1) !important;
+}
+
+.screen.quick-fade-enter {
+  opacity: 0;
+  animation: quickFadeIn var(--quick-fade-ms, .16s) ease forwards;
+  z-index: 4;
+}
+
+.screen.quick-fade-leave {
+  opacity: 1;
+  animation: quickFadeOut var(--quick-fade-ms, .16s) ease forwards;
+  z-index: 3;
+}
+
+@keyframes quickFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes quickFadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+.screen.active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.screen.drag-peek {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: none;
+  z-index: 2;
+  background: transparent;
+}
+
+.top {
+  position: relative;
+  display: grid;
+  grid-template-columns: 82px 1fr 46px;
+  align-items: start;
+  column-gap: 12px;
+  padding: calc(24px + var(--safe-top)) 36px 0;
+  z-index: 60;
+  pointer-events: auto;
+}
+
+.top > :not(.logo) {
+  transition: opacity .28s ease;
+}
+
+@keyframes balanceIntroPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .3; }
+}
+.balance.balance-intro-pulse {
+  animation: balanceIntroPulse 1.65s ease-in-out 2;
+}
+.balance {
+  grid-column: 1;
+  padding-top: 16.9px;
+  font-size: 23px;
+  font-weight: 600;
+  letter-spacing: .03em;
+  line-height: 1;
+  white-space: nowrap;
+  text-align: left;
+  font-family: var(--font-display);
+  background-image: linear-gradient(124deg, #eb3d7f 0%, #8e35d7 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.logo {
+  position: absolute;
+  top: calc(18.65px + var(--safe-top));
+  left: 50%;
+  width: 104px;
+  height: 58px;
+  display: grid;
+  place-items: center;
+  transform: translateX(-50%);
+  opacity: 1 !important;
+  transition: none !important;
+  will-change: transform;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: 1 !important;
+  transition: none !important;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  transform: translateZ(0);
+}
+
+.top .logo {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.global-logo {
+  position: absolute;
+  top: calc(18.65px + var(--safe-top));
+  left: 50%;
+  width: 104px;
+  height: 58px;
+  display: grid;
+  place-items: center;
+  transform: translateX(-50%) translateZ(0);
+  z-index: 40;
+  opacity: 1 !important;
+  transition: none !important;
+  will-change: transform;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.global-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: 1 !important;
+  transition: none !important;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  transform: translateZ(0);
+}
+
+.bag-button {
+  position: absolute;
+  top: calc(24px + var(--safe-top));               /* same vertical position as before */
+  right: calc((100% + 40px) / 6 - 22px);           /* centre tracks the scanner: (width + 40)/6 from the right edge */
+  width: 44px;
+  height: 52px;
+  opacity: .88;
+  display: grid;
+  place-items: center;
+}
+
+.bag-count {
+  position: absolute;
+  inset: 24px 0 auto;
+  text-align: center;
+  color: #050505;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1;
+  pointer-events: none;
+  transform: translateX(1px);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .15s ease, visibility 0s linear .15s;
+  will-change: opacity;
+}
+
+.bag-button.has-count .bag-count {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity .15s ease;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+.bag-button img,
+.bag-icon,
+.nav-icon,
+.row-icon,
+.profile-icon {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: grayscale(1) contrast(1.28);
+}
+
+.bag-icon {
+  fill: none;
+  stroke: #101010;
+  stroke-width: 3.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.bag-button .bag-icon {
+  transform: scale(1.2);
+  transform-origin: center center;
+}
+
+.icon-img {
+  display: block;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  filter: grayscale(1) contrast(1.28);
+}
+
+.svg-lib-icon {
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.content {
+  min-height: 0;
+  padding: 0 var(--page-pad);
+  overflow-y: auto;
+  overscroll-behavior-y: auto;
+  -webkit-overflow-scrolling: touch;
+  position: relative;
+  z-index: 5;
+  pointer-events: auto;
+}
+
+.screen[data-screen="bag"] .content {
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: auto;
+}
+
+.screen.rubber-ready .content {
+  transform: translateX(var(--content-x, 0px)) translateY(var(--pull-y, 0px));
+  transition: transform .42s cubic-bezier(.18, .9, .16, 1);
+  touch-action: pan-y;
+}
+
+@media (pointer: fine) {
+  .screen.rubber-ready .content {
+    cursor: grab;
+  }
+
+  .phone.is-pulling .screen.rubber-ready.active .content {
+    cursor: grabbing;
+  }
+}
+
+.phone.is-pulling .screen.rubber-ready.active .content {
+  transition: none;
+}
+
+.phone.is-pulling-x .screen.rubber-ready.active .content {
+  transition: none;
+}
+
+.phone.is-pulling-x .screen.drag-peek .content {
+  transition: none;
+}
+
+.screen.drag-peek .top,
+.screen.drag-peek .bottom-nav {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.home-content {
+  overflow: hidden;
+}
+
+.home-leader-rail {
+  margin-top: 38px;
+  pointer-events: auto;
+}
+
+.impact-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  column-gap: 26px;
+  margin-top: 9px;
+  text-align: center;
+}
+
+.impact-item {
+  display: grid;
+  grid-template-rows: 80px 24px;
+  justify-items: center;
+  gap: 11px;
+}
+
+.impact-icon {
+  width: 72px;
+  height: 80px;
+  display: grid;
+  align-items: end;
+  justify-items: center;
+}
+
+.impact-icon.bottle {
+  width: 72px;
+  height: 80px;
+}
+
+.impact-icon.factory {
+  width: 94px;
+}
+
+.impact-icon.tree {
+  width: 67px;
+}
+
+.impact-icon .icon-img {
+  max-width: 44px;
+  max-height: 68px;
+  object-position: center bottom;
+}
+
+.impact-icon.bottle .icon-img {
+  max-width: 56px;
+  max-height: 66px;
+  transform: translateY(0);
+}
+
+.impact-icon.factory .icon-img {
+  max-width: 86px;
+  max-height: 74px;
+}
+
+.impact-icon.tree .icon-img {
+  max-width: 60px;
+  max-height: 66px;
+}
+
+.impact-value {
+  font-size: 23px;
+  font-weight: 400;
+  letter-spacing: .19em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.points-block {
+  margin-top: 42px;
+  text-align: center;
+}
+
+.eyebrow {
+  position: relative;
+  margin: 0;
+  color: var(--muted);
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: .35em;
+  line-height: 1;
+  transform: translateX(.16em);
+}
+
+.points {
+  margin-top: 15px;
+  font-size: 86px;
+  font-weight: 400;
+  letter-spacing: .13em;
+  line-height: .9;
+  transform: translateX(.07em);
+  background-image: linear-gradient(124deg, var(--brand-a) 0%, var(--brand-b) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+.leaderboard {
+  margin-top: 0;
+  width: 322px;
+  max-width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+  text-align: center;
+}
+
+.leader-title {
+  margin: 0;
+  color: var(--muted);
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: .22em;
+  line-height: 1;
+  text-align: left;
+  padding-left: 0;
+  transform: none;
+  position: relative;
+  z-index: 8;
+  background: #fff;
+  pointer-events: none;
+  flex: 0 0 auto;
+}
+
+.leader-head::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -13px;
+  height: 13px;
+  background: linear-gradient(
+    to bottom,
+    rgba(255,255,255,1) 0%,
+    rgba(255,255,255,.94) 30%,
+    rgba(255,255,255,.68) 66%,
+    rgba(255,255,255,0) 100%
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+.leader-wrap {
+  position: relative;
+  height: var(--leader-window-height);
+  overflow: hidden;
+  touch-action: none;
+  pointer-events: auto;
+  margin-top: 8px;
+}
+
+.leader-list {
+  height: 100%;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: auto;
+  touch-action: none;
+  padding-top: 14px;
+  padding-bottom: var(--leader-list-bottom-pad);
+  padding-left: 2px;
+  padding-right: 2px;
+  scrollbar-width: none;
+  min-height: 0;
+  display: block;
+  transform: translateY(var(--leader-pull, 0px));
+  transition: transform .36s cubic-bezier(.2, .92, .16, 1);
+  pointer-events: auto;
+  will-change: transform;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.leader-row + .leader-row {
+  margin-top: 8px;
+}
+
+.leader-wrap.is-pulling .leader-list {
+  transition: none;
+}
+
+.leader-list::-webkit-scrollbar {
+  display: none;
+}
+
+.leader-wrap::before,
+.leader-wrap::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  z-index: 6;
+  transition: opacity .12s linear;
+}
+
+.leader-wrap::before {
+  display: none;
+}
+
+.leader-wrap::after {
+  bottom: 0;
+  height: 13px;
+  background: linear-gradient(
+    to top,
+    rgba(255,255,255,1) 0%,
+    rgba(255,255,255,.93) 38%,
+    rgba(255,255,255,.52) 72%,
+    rgba(255,255,255,0) 100%
+  );
+}
+
+.leader-row {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--row);
+  padding: 0 10px;
+  font-size: 19px;
+  font-weight: 500;
+  letter-spacing: .17em;
+  text-align: left;
+  pointer-events: none;
+}
+
+.leader-row span:first-child {
+  padding-left: 1px;
+  font-size: 17px;
+  font-weight: 400;
+  letter-spacing: .14em;
+}
+
+.leader-row span:last-child {
+  letter-spacing: .12em;
+  text-align: right;
+  padding-right: 1px;
+}
+
+.bottom-nav {
+  position: relative;
+  z-index: 60;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  align-items: end;
+  column-gap: 56px;
+  padding: 0 38px calc(4px + var(--safe-bottom));
+  background: #fff;
+  isolation: isolate;
+  pointer-events: auto;
+}
+
+.bottom-nav::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(var(--bottom-feather-h) * -1);
+  height: var(--bottom-feather-h);
+  background: linear-gradient(
+    to top,
+    rgba(255,255,255,1) 0%,
+    rgba(255,255,255,.96) 30%,
+    rgba(255,255,255,.72) 58%,
+    rgba(255,255,255,.32) 82%,
+    rgba(255,255,255,0) 100%
+  );
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* Lift scrolling content above the 30px bottom feather so the last item (e.g. place-order)
+   isn't covered and its edge no longer bleeds through as a grey line. Bag excluded (fixed flex). */
+.plain-content:not(.shop-content) {
+  padding-top: 18px;
+  padding-bottom: 18px;
+}
+
+.bottom-nav button {
+  width: 68px;
+  height: 64px;
+  display: grid;
+  align-items: end;
+  justify-items: center;
+  justify-self: center;
+  opacity: .92;
+  transform: translateX(0);
+  transition: opacity .28s ease, transform .72s cubic-bezier(.18, .9, .16, 1);
+  position: relative;
+  z-index: 3;
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+
+.bottom-nav button.active {
+  opacity: 1;
+}
+
+.nav-icon.qr-icon {
+  width: 64px;
+  height: 64px;
+  transform: translateY(-1.4px) translateZ(0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.nav-icon {
+  width: 64px;
+  height: 64px;
+  object-position: center center;
+}
+
+/* Use actual gear center from settings icon viewBox so rotation stays on-axis. */
+.bottom-nav button[data-go="settings"] .nav-icon {
+  width: 67px;
+  height: 67px;
+  transform-origin: 49.63% 50.44%;
+}
+
+/* Optical-centre the scanner glyph to match the gear/QR mid-line. */
+.bottom-nav button[data-go="scan"] .nav-icon {
+  transform: translateY(-1.3px);
+}
+
+.bottom-nav img[src$="scan-nav.svg"] {
+  width: 74px;
+  height: 74px;
+  transform: translateY(-2px);
+}
+
+.quiet .top {
+  opacity: 1;
+}
+
+.quiet .top > :not(.logo) {
+  opacity: .26;
+}
+
+.screen[data-screen="settings"] .top > :not(.logo) {
+  opacity: .22;
+}
+
+.quiet .bottom-nav {
+  opacity: 1;
+}
+
+.quiet .bottom-nav button {
+  opacity: .26;
+}
+
+.screen.quiet .bottom-nav button.active {
+  opacity: 1;
+}
+
+.screen.quiet .bottom-nav button.active .nav-icon {
+  filter: grayscale(1) contrast(1.32);
+}
+
+.screen[data-screen="bag"].active .top > :not(.logo) {
+  opacity: .26;
+}
+
+.screen[data-screen="bag"] .top {
+  align-self: start;
+  background: #fff;
+  height: 74px;
+  isolation: isolate;
+}
+
+.screen[data-screen="bag"] .top > :not(.logo) {
+  opacity: .88;
+  transition: opacity var(--bag-motion-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+.screen[data-screen="bag"] .top::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% - 8px);
+  height: 16px;
+  background: linear-gradient(
+    to bottom,
+    rgba(255,255,255,1) 0%,
+    rgba(255,255,255,.97) 34%,
+    rgba(255,255,255,.82) 62%,
+    rgba(255,255,255,.46) 84%,
+    rgba(255,255,255,.18) 94%,
+    rgba(255,255,255,0) 100%
+  );
+  pointer-events: none;
+  z-index: 0;
+}
+
+.screen[data-screen="bag"] .top > * {
+  position: relative;
+  z-index: 1;
+}
+
+.screen[data-screen="bag"] .top .bag-button {
+  position: absolute;   /* stay pinned top-right; `.top > *` above forces relative, which let `top` push the bag down into the page */
+  z-index: 1;
+}
+
+.screen[data-screen="bag"].active .top .bag-button {
+  opacity: 1;
+}
+
+.screen[data-screen="bag"].active .bottom-nav button {
+  opacity: .26;
+}
+
+.screen[data-screen="bag"].active .bottom-nav::before {
+  opacity: 0;
+}
+
+.screen[data-screen="checkout"].active .top > :not(.logo) {
+  opacity: .26;
+}
+
+.screen[data-screen="checkout"].active .top .bag-button {
+  opacity: 1;
+}
+
+.screen[data-screen="checkout"].active .bottom-nav button {
+  opacity: .26;
+}
+
+.screen[data-screen="account"].active .top > :not(.logo) {
+  opacity: .26;
+}
+
+.screen[data-screen="account"] .top {
+  background: #fff;
+  isolation: isolate;
+}
+
+.screen[data-screen="account"] .top > :not(.logo) {
+  opacity: .88;
+  transition: opacity var(--account-motion-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+.screen[data-screen="account"] .top::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% - 2px);
+  height: 14px;
+  background: linear-gradient(
+    to bottom,
+    rgba(255,255,255,1) 0%,
+    rgba(255,255,255,.92) 34%,
+    rgba(255,255,255,.58) 70%,
+    rgba(255,255,255,0) 100%
+  );
+  pointer-events: none;
+  z-index: 0;
+}
+
+.screen[data-screen="account"] .top > * {
+  position: relative;
+  z-index: 1;
+}
+
+.screen[data-screen="account"] .top .bag-button {
+  position: absolute;   /* stay pinned top-right; `.top > *` above forces relative, which let `top` push the bag down into the page */
+  z-index: 1;
+}
+
+.screen[data-screen="account"].active .top .balance {
+  opacity: 1;
+}
+
+.screen[data-screen="account"].active .bottom-nav button {
+  opacity: .26;
+}
+
+.screen[data-screen="settings"].active .top > :not(.logo) {
+  opacity: .22;
+}
+
+.phone.bag-target-settings .screen[data-screen="settings"].active .top > :not(.logo) {
+  opacity: .22 !important;
+  transition: none !important;
+}
+
+.phone.bag-target-settings .screen[data-screen="settings"].active .bottom-nav button {
+  opacity: .22 !important;
+  transition: none !important;
+}
+
+.phone.bag-target-settings .screen[data-screen="settings"].active .bottom-nav button[data-go="settings"] {
+  opacity: 1 !important;
+  transition: none !important;
+}
+
+.phone.bag-target-account .screen[data-screen="account"].active .top > :not(.logo) {
+  opacity: .26 !important;
+  transition: none !important;
+}
+
+.phone.bag-target-account .screen[data-screen="account"].active .top .balance {
+  opacity: 1 !important;
+  transition: none !important;
+}
+
+.phone.bag-target-account .screen[data-screen="account"].active .bottom-nav button {
+  opacity: .26 !important;
+  transition: none !important;
+}
+
+.top .logo {
+  opacity: 1 !important;
+}
+
+.screen[data-screen="settings"].active .bottom-nav button[data-go="settings"] img {
+  transform: rotate(-90deg);
+  transition: transform var(--settings-motion-ms) cubic-bezier(.24, .86, .2, 1);
+  transform-origin: 49.63% 50.44%;
+}
+
+.phone.settings-closing .screen[data-screen="settings"].active .bottom-nav button[data-go="settings"] img {
+  transform: rotate(0deg);
+  transition: transform var(--settings-motion-ms) cubic-bezier(.24, .86, .2, 1);
+  transform-origin: 49.63% 50.44%;
+}
+
+/* Settings close: reveal home in sync with reverse spin (no delayed handoff). */
+.phone.settings-closing .screen[data-screen="home"].active .content {
+  opacity: 0;
+  transition: none;
+}
+
+.phone.settings-closing .screen[data-screen="home"].active .bottom-nav button[data-go="settings"] img {
+  transform: rotate(-90deg);
+  transition: none;
+  transform-origin: 49.63% 50.44%;
+}
+
+.phone.settings-closing.settings-home-reveal .screen[data-screen="home"].active .content {
+  opacity: 1;
+  transition: opacity var(--settings-motion-ms) cubic-bezier(.24, .86, .2, 1);
+}
+
+.phone.settings-closing.settings-home-reveal .screen[data-screen="home"].active .bottom-nav button[data-go="settings"] img {
+  transform: rotate(0deg);
+  transition: transform var(--settings-motion-ms) cubic-bezier(.24, .86, .2, 1);
+  transform-origin: 49.63% 50.44%;
+}
+
+/* Bag close: exact reverse of bag entry (fade + slide up) beneath a static top feather strip. */
+.phone.bag-closing .screen[data-screen="bag"].active {
+  pointer-events: none;
+  z-index: 4;
+  background: transparent;
+}
+
+.phone.bag-closing .screen[data-screen="bag"].active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 104px;
+  bottom: 116px;
+  background: #fff;
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1),
+    transform var(--bag-exit-ms) cubic-bezier(.22, .72, .24, 1);
+  pointer-events: none;
+  z-index: 1;
+  will-change: opacity, transform;
+}
+
+.phone.bag-closing .screen[data-screen="home"].active .content {
+  opacity: 0;
+  transform: translateY(0);
+  transition: none;
+}
+
+.phone.bag-closing .screen[data-screen="home"].active .bottom-nav button {
+  opacity: .26;
+  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+.phone.bag-closing .screen[data-screen="bag"].active .top {
+  opacity: 1;
+  transition: none;
+  pointer-events: none;
+}
+
+.phone.bag-closing .screen[data-screen="bag"].active .top > :not(.logo) {
+  opacity: .26;
+  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+.phone.bag-closing .screen[data-screen="bag"].active .top .bag-button {
+  opacity: 1;
+  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+.phone.bag-closing .screen[data-screen="bag"].active .bottom-nav {
+  opacity: 1;
+  transition: none;
+  pointer-events: none;
+}
+
+.phone.bag-closing .screen[data-screen="bag"].active .content {
+  background: transparent;
+  position: relative;
+  z-index: 2;
+  overflow: hidden;
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1),
+    transform var(--bag-exit-ms) cubic-bezier(.22, .72, .24, 1);
+  will-change: opacity, transform;
+}
+
+.phone.bag-closing .screen[data-screen="bag"].active .plain-content {
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1),
+    transform var(--bag-exit-ms) cubic-bezier(.22, .72, .24, 1);
+  will-change: opacity, transform;
+}
+
+.phone.bag-closing .screen[data-screen="bag"].active .content::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 32px;
+  background: linear-gradient(
+    to top,
+    rgba(255,255,255,1) 0%,
+    rgba(255,255,255,.92) 36%,
+    rgba(255,255,255,.58) 72%,
+    rgba(255,255,255,0) 100%
+  );
+  pointer-events: none;
+  z-index: 4;
+}
+
+.phone.bag-closing .screen[data-screen="bag"].active .shop-content {
+  transform: translateY(0);
+  transition:
+    opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1),
+    transform var(--bag-exit-ms) cubic-bezier(.22, .72, .24, 1);
+  will-change: opacity, transform;
+}
+
+.phone.bag-closing .screen[data-screen="bag"].active .shop-content > * {
+  opacity: 1;
+  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1);
+  will-change: opacity;
+}
+
+.phone.bag-closing .screen[data-screen="bag"].active .product-render {
+  opacity: 1;
+  transition:
+    transform var(--bag-exit-ms) cubic-bezier(.22, .72, .24, 1),
+    opacity var(--bag-exit-ms) cubic-bezier(.18, .72, .24, 1);
+}
+
+.phone.bag-closing.bag-home-reveal .screen[data-screen="bag"].active::before {
+  opacity: 0;
+  transform: translateY(-92px);
+}
+
+.phone.bag-closing.bag-home-reveal .screen[data-screen="bag"].active .content {
+  opacity: 0;
+  transform: translateY(-92px);
+}
+
+.phone.bag-closing.bag-home-reveal .screen[data-screen="bag"].active .plain-content {
+  opacity: 0;
+  transform: translateY(-92px);
+  transition:
+    opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1),
+    transform var(--bag-exit-ms) cubic-bezier(.22, .72, .24, 1);
+}
+
+.phone.bag-closing.bag-home-reveal .screen[data-screen="bag"].active .shop-content {
+  transform: translateY(-92px);
+  transition:
+    opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1),
+    transform var(--bag-exit-ms) cubic-bezier(.22, .72, .24, 1);
+}
+
+.phone.bag-closing.bag-home-reveal .screen[data-screen="bag"].active .shop-content > * {
+  opacity: 0;
+}
+
+.phone.bag-closing.bag-home-reveal .screen[data-screen="bag"].active .product-render {
+  opacity: 0;
+}
+
+.phone.bag-closing.bag-home-reveal .screen[data-screen="home"].active .content {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+.phone.bag-closing.bag-home-reveal .screen[data-screen="home"].active .bottom-nav button {
+  opacity: .92;
+  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+.phone.bag-closing.bag-home-reveal .screen[data-screen="bag"].active .top {
+  opacity: 1;
+}
+
+.phone.bag-closing.bag-home-reveal .screen[data-screen="bag"].active .top > :not(.logo) {
+  opacity: .88;
+  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+.phone.bag-closing.bag-home-reveal .screen[data-screen="bag"].active .bottom-nav {
+  opacity: 1;
+  transition: none;
+}
+
+.phone.bag-closing.bag-home-reveal .screen[data-screen="bag"].active .bottom-nav button {
+  opacity: .92;
+  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+/* Bag close to non-home targets (e.g. scan/qr): fade the bag layer away as the target is revealed underneath. */
+.phone.bag-closing.bag-nonhome-reveal .screen[data-screen="bag"].active::before {
+  opacity: 0;
+  transform: translateY(-78px);
+  transition:
+    opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1),
+    transform var(--bag-exit-ms) cubic-bezier(.18, .86, .18, 1);
+}
+
+.phone.bag-closing.bag-nonhome-reveal .screen[data-screen="bag"].active .content {
+  opacity: 0;
+  transform: translateY(-78px);
+  transition:
+    opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1),
+    transform var(--bag-exit-ms) cubic-bezier(.18, .86, .18, 1);
+}
+
+.phone.bag-closing.bag-nonhome-reveal .screen[data-screen="bag"].active .plain-content {
+  opacity: 0;
+  transform: translateY(-78px);
+  transition:
+    opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1),
+    transform var(--bag-exit-ms) cubic-bezier(.18, .86, .18, 1);
+}
+
+.phone.bag-closing.bag-nonhome-reveal .screen[data-screen="bag"].active .shop-content {
+  opacity: 0;
+  transform: translateY(-78px);
+  transition:
+    opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1),
+    transform var(--bag-exit-ms) cubic-bezier(.18, .86, .18, 1);
+}
+
+.phone.bag-closing.bag-nonhome-reveal .screen[data-screen="bag"].active .shop-content > * {
+  opacity: 0;
+}
+
+.phone.bag-closing.bag-nonhome-reveal .screen[data-screen="bag"].active .product-render {
+  opacity: 0;
+}
+
+.phone.account-closing .screen[data-screen="home"].active .content {
+  opacity: 0;
+  transform: translateY(0);
+  transition: none;
+}
+
+.phone.account-closing .screen[data-screen="home"].active .bottom-nav button {
+  opacity: .26;
+  transition: opacity var(--account-exit-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+.phone.account-closing .screen[data-screen="account"].active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: none;
+  z-index: 4;
+  background: transparent;
+}
+
+.phone.account-closing .screen[data-screen="account"].active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 104px;
+  bottom: 116px;
+  background: #fff;
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity var(--account-exit-ms) cubic-bezier(.22, .82, .2, 1),
+    transform var(--account-exit-ms) cubic-bezier(.22, .72, .24, 1);
+  pointer-events: none;
+  z-index: 1;
+  will-change: opacity, transform;
+}
+
+.phone.account-closing .screen[data-screen="account"].active .content {
+  background: transparent;
+  position: relative;
+  z-index: 2;
+  overflow: hidden;
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity var(--account-exit-ms) cubic-bezier(.22, .82, .2, 1),
+    transform var(--account-exit-ms) cubic-bezier(.22, .72, .24, 1);
+  will-change: opacity, transform;
+}
+
+.phone.account-closing .screen[data-screen="account"].active .account-content > * {
+  opacity: 1;
+  transition: opacity var(--account-exit-ms) cubic-bezier(.22, .82, .2, 1);
+  will-change: opacity;
+}
+
+.phone.account-closing .screen[data-screen="account"].active .top {
+  opacity: 1;
+  transition: none;
+  pointer-events: none;
+}
+
+.phone.account-closing .screen[data-screen="account"].active .top > :not(.logo) {
+  opacity: .26;
+  transition: opacity var(--account-exit-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+.phone.account-closing .screen[data-screen="account"].active .top .balance {
+  opacity: 1;
+  transition: opacity var(--account-exit-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+.phone.account-closing .screen[data-screen="account"].active .bottom-nav {
+  opacity: 1;
+  transition: none;
+  pointer-events: none;
+}
+
+.phone.account-closing .screen[data-screen="account"].active .bottom-nav button {
+  opacity: .26;
+  transition: opacity var(--account-exit-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+.phone.account-closing.account-home-reveal .screen[data-screen="account"].active::before {
+  opacity: 0;
+  transform: translateY(92px);
+}
+
+.phone.account-closing.account-home-reveal .screen[data-screen="account"].active .content {
+  opacity: 0;
+  transform: translateY(92px);
+}
+
+.phone.account-closing.account-home-reveal .screen[data-screen="account"].active .account-content > * {
+  opacity: 0;
+}
+
+.phone.account-closing.account-home-reveal .screen[data-screen="home"].active .content {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity var(--account-exit-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+.phone.account-closing.account-home-reveal .screen[data-screen="home"].active .bottom-nav button {
+  opacity: .92;
+  transition: opacity var(--account-exit-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+.phone.account-closing.account-home-reveal .screen[data-screen="account"].active .top {
+  opacity: 1;
+}
+
+.phone.account-closing.account-home-reveal .screen[data-screen="account"].active .top > :not(.logo) {
+  opacity: .88;
+  transition: opacity var(--account-exit-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+.phone.account-closing.account-home-reveal .screen[data-screen="account"].active .top .balance {
+  opacity: 1;
+  transition: opacity var(--account-exit-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+.phone.account-closing.account-home-reveal .screen[data-screen="account"].active .bottom-nav {
+  opacity: 1;
+  transition: none;
+}
+
+.phone.account-closing.account-home-reveal .screen[data-screen="account"].active .bottom-nav button {
+  opacity: .92;
+  transition: opacity var(--account-exit-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+.screen[data-screen="settings"].active .bottom-nav button:not(:first-child) {
+  opacity: .22;
+}
+
+.qr-content,
+.scan-content,
+.plain-content {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+}
+
+.main-qr {
+  width: 338px;
+  max-width: 100%;
+  filter: grayscale(1) contrast(1.08);
+  pointer-events: none;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+.scan-target {
+  width: 262px;
+  height: 262px;
+  position: relative;
+}
+
+.camera-content {
+  padding: 0;
+  align-content: stretch;
+}
+
+.camera-viewport {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #f5f5f5;
+}
+
+.camera-dummy {
+  display: none;
+}
+
+.scanner-fallback {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+  padding: 92px;
+  opacity: .2;
+  pointer-events: none;
+  -webkit-user-drag: none;
+  user-select: none;
+  visibility: hidden;
+}
+
+.main-scan {
+  width: 310px;
+  height: 310px;
+  object-fit: contain;
+  filter: grayscale(1) contrast(1.28);
+  animation: scanPulse 1.65s ease-in-out infinite;
+  pointer-events: none;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+.camera-viewport .main-scan {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 290px;
+  height: 290px;
+  opacity: 1;
+  transform: translateY(-28px);
+  z-index: 2;
+}
+
+.scan-status {
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  bottom: 28px;
+  z-index: 3;
+  margin: 0 auto;
+  padding: 10px 14px;
+  max-width: 340px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, .88);
+  color: #111;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: .035em;
+  text-align: center;
+  overflow-wrap: anywhere;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, .08);
+}
+
+.scan-candidate {
+  position: absolute;
+  left: 50%;
+  bottom: 72px;
+  z-index: 4;
+  display: none;
+  align-items: stretch;
+  width: max-content;
+  max-width: calc(100% - 40px);
+  padding: 4px;
+  border: 1px solid rgba(255, 255, 255, .74);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, .9);
+  color: #111;
+  box-shadow: 0 7px 24px rgba(0, 0, 0, .18);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  transform: translateX(-50%);
+}
+
+.scan-candidate.is-positioned {
+  left: var(--candidate-left);
+  top: var(--candidate-top);
+  bottom: auto;
+}
+
+.scan-candidate-label,
+.scan-candidate-value {
+  display: block;
+  text-align: left;
+}
+
+.scan-candidate-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .075em;
+  text-transform: uppercase;
+}
+
+.scan-candidate-value {
+  max-width: 238px;
+  margin-top: 2px;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.25;
+  letter-spacing: .01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scan-candidate-use {
+  min-width: 170px;
+  min-height: 46px;
+  padding: 7px 12px;
+  border-radius: 14px;
+  background: transparent;
+  color: #111;
+}
+
+.scan-candidate-use:active {
+  background: rgba(0, 0, 0, .06);
+}
+
+.scan-candidate-dismiss {
+  align-self: center;
+  width: 34px;
+  height: 34px;
+  margin-left: 2px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, .07);
+  color: #333;
+  font-size: 21px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.scan-restart {
+  position: absolute;
+  left: 50%;
+  bottom: 76px;
+  z-index: 4;
+  display: none;
+  min-height: 40px;
+  padding: 0 18px;
+  border-radius: 20px;
+  background: #111;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: .035em;
+  transform: translateX(-50%);
+}
+
+.scan-result {
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  bottom: 28px;
+  z-index: 4;
+  display: none;
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, .72);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, .92);
+  color: #111;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, .14);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+}
+
+.scan-result-kicker,
+.scan-result-title,
+.scan-result-message,
+.scan-result-code {
+  margin: 0;
+  text-align: center;
+}
+
+.scan-result-kicker {
+  display: none;
+}
+
+.scan-result-title {
+  font-size: 15px;
+  font-weight: 750;
+  letter-spacing: .04em;
+}
+
+.scan-result-plus {
+  display: inline-block;
+  margin: 3px 0;
+  font-weight: 600;
+  color: rgba(0, 0, 0, .45);
+}
+
+.scan-result-message {
+  margin-top: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  letter-spacing: .018em;
+}
+
+.scan-result-code {
+  margin-top: 10px;
+  padding: 9px 11px;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, .055);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+  letter-spacing: .04em;
+  overflow-wrap: anywhere;
+}
+
+.scan-result-code:empty {
+  display: none;
+}
+
+.scan-result-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.scan-result-actions button {
+  min-height: 42px;
+  border-radius: 15px;
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: .025em;
+}
+
+.scan-activate-account,
+.scan-claim-product,
+.scan-done {
+  background: #111;
+  color: #fff;
+}
+
+.scan-result-again,
+.scan-another,
+.scan-cancel {
+  background: rgba(0, 0, 0, .07);
+  color: #111;
+}
+
+.scan-account-sheet {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: none;
+  align-items: flex-end;
+  padding: 18px;
+  background: rgba(0, 0, 0, .28);
+  -webkit-backdrop-filter: blur(7px);
+  backdrop-filter: blur(7px);
+}
+
+.scan-account-sheet.open {
+  display: flex;
+}
+
+.scan-account-form {
+  position: relative;
+  width: 100%;
+  padding: 22px 18px 18px;
+  border: 1px solid rgba(255, 255, 255, .7);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, .97);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, .22);
+}
+
+.scan-account-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, .07);
+  color: #111;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.scan-account-kicker,
+.scan-account-title,
+.scan-account-copy,
+.scan-account-error {
+  margin: 0;
+}
+
+.scan-account-kicker {
+  color: rgba(0, 0, 0, .5);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.scan-account-title {
+  margin-top: 6px;
+  font-size: 19px;
+  letter-spacing: .02em;
+}
+
+.scan-account-copy {
+  max-width: 290px;
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.scan-account-label {
+  display: block;
+  margin: 16px 0 6px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.scan-account-email,
+.scan-account-code {
+  width: 100%;
+  height: 48px;
+  padding: 0 14px;
+  border: 1px solid rgba(0, 0, 0, .15);
+  border-radius: 14px;
+  background: #fff;
+  color: #111;
+  outline: none;
+}
+
+.scan-account-code {
+  letter-spacing: .35em;
+  text-align: center;
+}
+
+.scan-account-email:focus,
+.scan-account-code:focus {
+  border-color: rgba(0, 0, 0, .48);
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, .06);
+}
+
+/* Two-stage activation: stage 1 = email, stage 2 = 6-digit OTP code. */
+.scan-account-code-label,
+.scan-account-code {
+  display: none;
+}
+
+.scan-account-sheet[data-stage="code"] .scan-account-code-label,
+.scan-account-sheet[data-stage="code"] .scan-account-code {
+  display: block;
+}
+
+.scan-account-sheet[data-stage="code"] .scan-account-label:not(.scan-account-code-label),
+.scan-account-sheet[data-stage="code"] .scan-account-email {
+  display: none;
+}
+
+.scan-account-error {
+  min-height: 17px;
+  padding: 5px 2px 0;
+  color: #a32828;
+  font-size: 11px;
+}
+
+.scan-account-confirm,
+.scan-account-cancel {
+  width: 100%;
+  min-height: 44px;
+  border-radius: 15px;
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: .025em;
+}
+
+.scan-account-confirm {
+  margin-top: 5px;
+  background: #111;
+  color: #fff;
+}
+
+.scan-account-cancel {
+  margin-top: 8px;
+  background: rgba(0, 0, 0, .07);
+  color: #111;
+}
+
+.scan-activate-account,
+.scan-claim-product,
+.scan-result-again,
+.scan-done,
+.scan-another,
+.scan-cancel {
+  display: none;
+}
+
+.screen[data-screen="scan"][data-scan-state="candidate"] .scan-candidate {
+  display: flex;
+}
+
+.screen[data-screen="scan"][data-scan-state="candidate"] .scan-status {
+  visibility: hidden;
+}
+
+.screen[data-screen="scan"][data-scan-state="success"] .scan-status {
+  bottom: 130px;
+}
+
+.screen[data-screen="scan"][data-scan-state="success"] .scan-restart {
+  display: block;
+}
+
+.screen[data-screen="scan"][data-scan-state="product-found"] .scan-result,
+.screen[data-screen="scan"][data-scan-state="product-found-guest"] .scan-result,
+.screen[data-screen="scan"][data-scan-state="not-hug-code"] .scan-result,
+.screen[data-screen="scan"][data-scan-state="product-linked"] .scan-result,
+.screen[data-screen="scan"][data-scan-state="already-linked"] .scan-result,
+.screen[data-screen="scan"][data-scan-state="claimed-by-other"] .scan-result {
+  display: block;
+}
+
+.screen[data-screen="scan"][data-scan-state="product-found"] .scan-status,
+.screen[data-screen="scan"][data-scan-state="product-found-guest"] .scan-status,
+.screen[data-screen="scan"][data-scan-state="not-hug-code"] .scan-status,
+.screen[data-screen="scan"][data-scan-state="product-linked"] .scan-status,
+.screen[data-screen="scan"][data-scan-state="already-linked"] .scan-status,
+.screen[data-screen="scan"][data-scan-state="claimed-by-other"] .scan-status {
+  visibility: hidden;
+}
+
+.screen[data-screen="scan"][data-scan-state="product-found"] .scan-claim-product,
+.screen[data-screen="scan"][data-scan-state="product-found-guest"] .scan-activate-account,
+.screen[data-screen="scan"][data-scan-state="product-found"] .scan-cancel,
+.screen[data-screen="scan"][data-scan-state="product-found-guest"] .scan-cancel,
+.screen[data-screen="scan"][data-scan-state="not-hug-code"] .scan-result-again,
+.screen[data-screen="scan"][data-scan-state="already-linked"] .scan-result-again,
+.screen[data-screen="scan"][data-scan-state="claimed-by-other"] .scan-result-again,
+.screen[data-screen="scan"][data-scan-state="product-linked"] .scan-done {
+  display: block;
+}
+
+.screen[data-screen="scan"][data-scan-state="unavailable"] .scanner-fallback,
+.screen[data-screen="scan"][data-scan-state="denied"] .scanner-fallback {
+  visibility: visible;
+}
+
+html.scan-camera-active,
+html.scan-camera-active body,
+html.scan-camera-active .stage,
+html.scan-camera-active .phone,
+html.scan-camera-active .screen[data-screen="scan"].active,
+html.scan-camera-active .screen[data-screen="scan"].active .camera-content,
+html.scan-camera-active .screen[data-screen="scan"].active .camera-viewport {
+  background: transparent !important;
+}
+
+html.scan-camera-active .phone::before {
+  opacity: 0;
+}
+
+html.scan-camera-active .screen[data-screen="scan"].active .top,
+html.scan-camera-active .screen[data-screen="scan"].active .bottom-nav {
+  background: #fff;
+}
+
+html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
+  background: transparent;
+}
+
+@keyframes scanPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .3; }
+}
+
+.scan-target::before,
+.scan-target::after,
+.scan-corners::before,
+.scan-corners::after {
+  content: "";
+  position: absolute;
+  width: 72px;
+  height: 72px;
+  border-color: #111;
+  border-style: solid;
+  border-radius: 14px;
+}
+
+.scan-target::before {
+  top: 0;
+  left: 0;
+  border-width: 5px 0 0 5px;
+}
+
+.scan-target::after {
+  top: 0;
+  right: 0;
+  border-width: 5px 5px 0 0;
+}
+
+.scan-corners::before {
+  bottom: 0;
+  left: 0;
+  border-width: 0 0 5px 5px;
+}
+
+.scan-corners::after {
+  right: 0;
+  bottom: 0;
+  border-width: 0 5px 5px 0;
+}
+
+.scan-bar {
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  top: 50%;
+  height: 4px;
+  border-radius: 99px;
+  background: #111;
+  animation: scan 2.2s ease-in-out infinite;
+}
+
+@keyframes scan {
+  0%, 100% {
+    transform: translateY(-82px);
+    opacity: .2;
+  }
+
+  50% {
+    transform: translateY(82px);
+    opacity: 1;
+  }
+}
+
+.plain-content {
+  align-content: start;
+  gap: 13px;
+  padding-top: 36px;
+  opacity: 0;
+  transform: translateY(92px);
+  transition: opacity .26s ease, transform .58s cubic-bezier(.18, .9, .16, 1);
+  pointer-events: auto;
+}
+
+.screen.active .plain-content {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.phone.bag-entering .screen[data-screen="home"].active,
+.phone.account-entering .screen[data-screen="home"].active {
+  pointer-events: none;
+}
+
+.phone.bag-entering .screen[data-screen="home"].active .content {
+  opacity: 0;
+  transform: translateY(0);
+  transition: opacity var(--bag-motion-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+.phone.account-entering .screen[data-screen="home"].active .content {
+  opacity: 0;
+  transform: translateY(0);
+  transition: opacity var(--account-motion-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+.phone.bag-entering .screen[data-screen="bag"].active .plain-content,
+.phone.bag-entering .screen[data-screen="bag"].active .shop-content {
+  transition:
+    opacity var(--bag-motion-ms) cubic-bezier(.22, .82, .2, 1),
+    transform var(--bag-motion-ms) cubic-bezier(.16, .86, .18, 1);
+}
+
+.phone.account-entering .screen[data-screen="account"].active .plain-content {
+  transition:
+    opacity var(--account-motion-ms) cubic-bezier(.22, .82, .2, 1),
+    transform var(--account-motion-ms) cubic-bezier(.16, .86, .18, 1);
+}
+
+.screen[data-screen="profile"] .plain-content,
+.screen[data-screen="impact"] .plain-content {
+  padding-top: 8px;
+  transform: translateY(52px);
+  transition:
+    opacity .46s cubic-bezier(.22, .82, .2, 1),
+    transform .76s cubic-bezier(.16, .86, .18, 1);
+}
+.screen[data-screen="impact"].active .plain-content {
+  transform: translateY(0);
+}
+
+.screen[data-screen="settings"] .plain-content {
+  transform: translateY(46px);
+  transition: opacity .24s ease, transform var(--settings-motion-ms) cubic-bezier(.18, .9, .16, 1);
+}
+.screen[data-screen="settings"].active .plain-content {
+  transform: translateY(0);
+}
+
+.phone.settings-closing .screen[data-screen="settings"].active .plain-content {
+  opacity: 0;
+  transform: translateY(46px);
+  transition: opacity .24s ease, transform var(--settings-motion-ms) cubic-bezier(.18, .9, .16, 1);
+}
+
+.plain-title {
+  margin: 0 0 18px;
+  color: var(--muted);
+  font-size: 29px;
+  font-weight: 600;
+  letter-spacing: .32em;
+  line-height: 1;
+  text-align: center;
+  transform: translateX(.14em);
+}
+
+.profile-icon {
+  width: 272px;
+  height: 272px;
+  margin-bottom: 16px;
+}
+
+.profile-name {
+  margin-bottom: 16px;
+  font-size: 29px;
+  letter-spacing: .22em;
+  text-align: center;
+}
+
+.screen[data-screen="profile"] .plain-content {
+  gap: 2px;
+  padding-top: 8px;
+}
+
+.screen[data-screen="profile"].active .plain-content {
+  transform: translateY(0);
+}
+
+.screen[data-screen="profile"] .plain-title {
+  margin: 0 0 -4px;
+  transform: none;
+  letter-spacing: .28em;
+  text-align: center;
+}
+
+.screen[data-screen="profile"] .profile-icon {
+  width: 312px;
+  height: 312px;
+  margin-bottom: -112px;
+  justify-self: center;
+  object-fit: contain;
+  object-position: center center;
+  transform: translate(10px, -30px);
+  transform-origin: center center;
+}
+
+.screen[data-screen="profile"] .profile-name {
+  margin: -16px 0 24px;
+  font-size: 23px;
+  letter-spacing: .16em;
+  line-height: 1;
+}
+
+.screen[data-screen="profile"] .simple-row {
+  min-height: 48px;
+  font-size: 17px;
+  letter-spacing: .14em;
+}
+
+.screen[data-screen="profile"] .simple-row + .simple-row {
+  margin-top: 8px;
+}
+
+.simple-row {
+  width: 100%;
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 16px;
+  border-radius: 999px;
+  background: var(--row);
+  padding: 0 16px;
+  color: #080808;
+  font-size: 18px;
+  font-weight: 400;
+  letter-spacing: .16em;
+  text-align: left;
+  position: relative;
+  z-index: 12;
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+
+.simple-row .row-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.row-icon {
+  width: 27px;
+  height: 27px;
+  flex: 0 0 auto;
+}
+
+.screen[data-screen="settings"] #settings-profile .row-icon {
+  width: 27px;
+  height: 27px;
+  object-fit: contain;
+  object-position: center center;
+  transform: translateY(3px) scale(1.79);
+  transform-origin: center center;
+  flex: 0 0 auto;
+}
+
+.row-icon svg,
+.row-svg {
+  width: 27px;
+  height: 27px;
+  stroke: #050505;
+  stroke-width: 3.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+  flex: 0 0 auto;
+}
+
+.referral-icon {
+  width: 27px;
+  height: 27px;
+  transform: none;
+}
+
+.shop-content {
+  align-content: start;
+  gap: clamp(4px, .8vh, 10px);
+  padding-top: clamp(0px, .45vh, 4px);
+  transform: translateY(-92px);
+  position: relative;
+}
+
+.screen.active .shop-content {
+  transform: translateY(0);
+}
+
+.screen[data-screen="bag"] .shop-content::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -22px;
+  height: 32px;
+  background: linear-gradient(
+    to bottom,
+    rgba(255,255,255,1) 0%,
+    rgba(255,255,255,.94) 36%,
+    rgba(255,255,255,.68) 66%,
+    rgba(255,255,255,.28) 88%,
+    rgba(255,255,255,0) 100%
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+.product-card {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: clamp(4px, .8vh, 8px);
+  padding-bottom: clamp(8px, 1.4vh, 16px);  /* keep the checkout clear of the nav */
+  text-align: center;
+  position: relative;
+  z-index: 2;
+}
+
+/* Only the carousel flexes; everything below it (name, details, price,
+   quantity, checkout) keeps its natural size so the CTA is never clipped,
+   whatever the screen height or safe-area insets. */
+.product-card > * {
+  flex: 0 0 auto;
+}
+
+.product-carousel {
+  flex: 0 1 auto;
+  min-height: 92px;
+}
+
+.product-carousel {
+  width: calc(100% + (var(--page-pad) * 2));
+  max-width: none;
+  height: clamp(188px, 26.1vh, 224px);
+  position: relative;
+  overflow: hidden;
+  background: transparent;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+  transform: none;
+  margin-left: calc(var(--page-pad) * -1);
+  margin-right: calc(var(--page-pad) * -1);
+  contain: layout paint;
+  --bag-render-scale: clamp(1.24, 4.15vw, 1.39);
+  --bag-render-shift-x: 0px;
+  --bag-render-shift-y: 0px;
+}
+
+.product-carousel-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.product-arrows {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 38px;
+  pointer-events: none;
+  z-index: 3;
+  color: rgba(8, 8, 8, .84);
+  opacity: 0;
+  transition: opacity var(--bag-motion-ms) cubic-bezier(.22, .82, .2, 1);
+  will-change: opacity;
+}
+
+.product-arrow-button-left {
+  margin-left: 0;
+}
+
+.product-arrow-button-right {
+  margin-right: 0;
+}
+
+.product-arrow-button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  color: inherit;
+  opacity: .96;
+  flex: 0 0 auto;
+  pointer-events: auto;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+.product-arrow-button:active {
+  transform: scale(.96);
+}
+
+.product-arrow {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  display: block;
+}
+
+.product-arrow path {
+  stroke: currentColor;
+}
+
+.screen[data-screen="bag"].active .product-arrows {
+  opacity: 1;
+}
+
+.phone.bag-closing .screen[data-screen="bag"].active .product-arrows {
+  opacity: 0;
+  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+.product-render {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center center;
+  opacity: 0;
+  transform: translate3d(var(--bag-render-shift-x, 0px), var(--bag-render-shift-y, 0px), 0) scale(var(--bag-render-scale, 1));
+  transform-origin: center center;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  transition:
+    transform 1080ms cubic-bezier(.18, .88, .12, 1),
+    opacity 1080ms cubic-bezier(.18, .88, .12, 1);
+  will-change: transform, opacity;
+  pointer-events: none;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+.product-render.is-visible {
+  opacity: 1;
+}
+
+.product-render.is-hidden {
+  opacity: 0;
+}
+
+.product-name {
+  margin-top: 2px;
+  margin-bottom: 2px;
+  color: #080808;
+  font-size: 20px;
+  font-weight: 400;
+  letter-spacing: .18em;
+  text-align: center;
+}
+
+.product-variant {
+  width: 100%;
+  display: block;
+  margin-top: 2px;
+  margin-bottom: 2px;
+  color: rgba(8, 8, 8, .68);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: .12em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.product-details {
+  display: grid;
+  justify-items: center;
+  gap: clamp(4px, .65vh, 7px);
+  margin-top: clamp(4px, .8vh, 10px);
+  color: #111;
+  text-align: center;
+  text-transform: lowercase;
+}
+
+.product-details div {
+  width: 100%;
+  color: #3a3a3a;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: .14em;
+  text-align: center;
+  line-height: 1.24;
+}
+
+.product-details div:first-child {
+  font-weight: 650;
+}
+
+.product-price {
+  margin-top: 2px;
+  color: #111;
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: .08em;
+  line-height: 1;
+  text-align: center;
+}
+
+.shop-actions {
+  width: 218px;
+  display: grid;
+  gap: 10px;
+  justify-items: stretch;
+  margin-top: clamp(2px, .8vh, 8px);
+  position: relative;
+  z-index: 120;
+  pointer-events: auto !important;
+  isolation: isolate;
+}
+
+.qty-pebble,
+.checkout-button {
+  height: 50px;
+  border-radius: 999px;
+  display: grid;
+  align-items: center;
+  letter-spacing: .08em;
+}
+
+.qty-pebble {
+  grid-template-columns: 50px 1fr 50px;
+  border: 1.5px solid #5b5b5b;
+  color: #050505;
+  background: #fff;
+  pointer-events: auto !important;
+}
+
+.qty-button {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  font-size: 30px;
+  line-height: 1;
+  letter-spacing: 0;
+  padding-bottom: 2px;
+  pointer-events: auto !important;
+  touch-action: manipulation;
+}
+
+#qty-minus,
+#qty-plus {
+  font-weight: 500;
+  display: grid;
+  align-items: center;
+  justify-items: center;
+  position: relative;
+  z-index: 3;
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+
+#qty-plus {
+  padding-bottom: 0;   /* the shared 2px up-nudge over-corrects '+'; center it */
+}
+
+#qty-minus {
+  transform: translateY(-2px) scaleX(1.22);
+  transform-origin: center;
+}
+
+.qty-number {
+  font-size: 23px;
+  font-weight: 400;
+  letter-spacing: .12em;
+  text-align: center;
+  transform: translateX(.06em);
+}
+
+.checkout-button {
+  place-items: center;
+  background: #050505;
+  color: #fff;
+  font-size: 17px;
+  font-weight: 400;
+  text-align: center;
+  pointer-events: auto !important;
+  touch-action: manipulation;
+  position: relative;
+  z-index: 130;
+}
+
+.screen[data-screen="bag"] .content,
+.screen[data-screen="bag"] .shop-content,
+.screen[data-screen="bag"] .product-card {
+  pointer-events: auto !important;
+}
+
+.checkout-content {
+  align-content: start;
+  gap: 8px;
+  padding-top: 10px;
+}
+
+.checkout-content .simple-row {
+  padding-left: 18px;
+  padding-right: 18px;
+  touch-action: auto;
+}
+
+.checkout-content .checkout-entry-row {
+  position: relative;
+  overflow: hidden;
+}
+
+.checkout-content label.simple-row {
+  cursor: text;
+}
+
+.checkout-content .simple-row span:first-child {
+  padding-left: 1px;
+}
+
+.checkout-entry-row span:first-child {
+  position: absolute;
+  inset: 0 18px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  color: rgba(0, 0, 0, .54);
+  font-family: var(--font-ui);
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: .07em;
+  line-height: 1.2;
+  transition: opacity .12s ease;
+  pointer-events: none;
+}
+
+.checkout-entry-row.is-editing span:first-child,
+.checkout-entry-row.has-value span:first-child {
+  opacity: 0;
+}
+
+.checkout-content .simple-row span:last-child {
+  text-align: right;
+  justify-self: end;
+  padding-right: 1px;
+  letter-spacing: .12em;
+}
+
+.checkout-field {
+  justify-self: end;
+  width: 58%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #161616;
+  text-align: right;
+  font-family: var(--font-ui);
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: .07em;
+  line-height: 1.2;
+  padding: 0;
+  margin: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  border-radius: 0;
+  caret-color: #111;
+  pointer-events: auto;
+  touch-action: auto;
+  cursor: text;
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  -webkit-touch-callout: default;
+}
+
+.checkout-entry-field {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  padding: 0 18px;
+  color: #000;
+  text-align: left;
+  font-family: var(--font-ui);
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: .07em;
+  line-height: 54px;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.checkout-payment-field {
+  align-self: stretch;
+  height: 100%;
+  color: #000;
+  font-family: var(--font-ui);
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: .07em;
+  line-height: 1.2;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 9px), transparent 100%);
+  mask-image: linear-gradient(to right, #000 calc(100% - 9px), transparent 100%);
+}
+
+.checkout-field::placeholder {
+  color: #7e7e7e;
+  opacity: 1;
+  letter-spacing: .05em;
+}
+
+.checkout-note {
+  margin: 0 0 6px;
+  color: #606060;
+  font-size: 16px;
+  letter-spacing: .11em;
+  text-align: center;
+}
+
+  .checkout-total {
+    width: 100%;
+    min-height: 28px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    color: #151515;
+    padding: 12px 18px;
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: .12em;
+  }
+
+  .checkout-total span:first-child {
+    padding-left: 1px;
+    color: rgba(0, 0, 0, .54);
+  }
+
+  .checkout-total span:last-child {
+    justify-self: end;
+    text-align: right;
+    padding-right: 1px;
+    font-weight: 600;
+  }
+
+.pay-button {
+  width: 100%;
+  height: 54px;
+  margin-top: 12px;
+  border-radius: 999px;
+  background: #050505;
+  color: #fff;
+  font-size: 17px;
+  letter-spacing: .12em;
+}
+
+.account-content {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  min-height: 0;
+  height: 100%;
+  padding-top: 8px;
+  overflow: hidden;
+  gap: 8px;
+  align-content: stretch;
+}
+
+.screen[data-screen="account"] .content {
+  overflow: hidden;
+  padding-left: var(--page-pad);
+  padding-right: var(--page-pad);
+}
+
+.screen[data-screen="account"] .plain-title {
+  transform: none;
+  text-align: center;
+}
+
+/* History scroll window bottoms out at the same clearance above the nav as the
+   home leaderboard (~10px). The shared .plain-content 36px bottom-pad is for
+   button-ending screens (e.g. checkout); account ends in its own feathered
+   scroll window, so it overrides to match the leaderboard. */
+.screen[data-screen="account"] .plain-content {
+  padding-bottom: 10px;
+}
+
+.screen[data-screen="settings"] .content {
+  pointer-events: auto;
+  position: relative;
+  z-index: 15;
+}
+
+.account-main {
+  width: min(100%, calc(var(--phone-w) - (var(--page-pad) * 2)));
+  margin-inline: auto;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  align-items: stretch;
+}
+
+.account-main .simple-row {
+  min-height: 82px;
+  border-radius: 22px;
+  background: var(--row);
+  padding: 10px 12px;
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: auto auto;
+  align-content: center;
+  justify-items: center;
+  row-gap: 8px;
+  font-size: 14px;
+  letter-spacing: .08em;
+  text-align: center;
+}
+
+.account-main .simple-row.wide {
+  grid-column: 1 / -1;
+  min-height: 46px;
+  padding: 7px 16px;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: 1fr;
+  align-items: center;
+  justify-items: initial;
+  row-gap: 0;
+}
+
+.account-main .simple-row.wide .money-card-label {
+  width: auto;
+  justify-self: start;
+  text-align: left;
+}
+
+.account-main .simple-row.wide .money-card-value {
+  width: auto;
+  justify-self: end;
+  text-align: right;
+}
+
+.account-main .simple-row.compact {
+  min-height: 74px;
+  padding: 11px 8px 4px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  row-gap: 0;
+}
+
+.account-main .simple-row.compact .money-card-label {
+  align-self: center;
+  text-align: center;
+  white-space: nowrap;
+  font-size: 10px;
+  letter-spacing: .08em;
+  line-height: 1;
+  margin-top: 3px;
+}
+
+.account-main .simple-row.compact .money-card-value {
+  align-self: center;
+  text-align: center;
+  line-height: 1.05;
+  margin-bottom: 1px;
+  padding-bottom: 0;
+  transform: translateY(-5px);
+}
+
+.money-card-label {
+  display: block;
+  width: 100%;
+  justify-self: stretch;
+  color: #3c3c41;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  line-height: 1.1;
+  text-align: center;
+}
+
+.money-card-value {
+  display: block;
+  width: 100%;
+  justify-self: stretch;
+  color: #111215;
+  font-family: var(--font-display);
+  font-size: 27px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  line-height: 1.02;
+  text-align: center;
+}
+
+.money-card-value.small {
+  font-size: 23px;
+  letter-spacing: .03em;
+}
+
+.gradient-accent {
+  background-image: linear-gradient(124deg, #eb3d7f 0%, #8e35d7 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Checkout: per-variant editable line items */
+.checkout-items-label { font-size: 16px; color: var(--muted); letter-spacing: .12em; margin: 16px 0 8px; }
+.checkout-items { display: flex; flex-direction: column; gap: 8px; }
+.checkout-empty { font-size: 14px; color: var(--muted); opacity: .6; letter-spacing: .06em; padding: 4px 2px; }
+.checkout-item {
+  display: flex; align-items: center; gap: 12px; min-height: 54px;
+  padding: 0 14px 0 18px; border-radius: 999px;
+  background: var(--row); border: 1px solid var(--box-stroke);
+}
+.checkout-item-name {
+  flex: 1; min-width: 0; font-size: 16px; font-weight: 400; letter-spacing: .08em;
+  color: #080808; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.checkout-stepper { display: inline-flex; align-items: center; gap: 8px; }
+.checkout-step {
+  position: relative; box-sizing: border-box;
+  width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--box-stroke);
+  background: #fff; font-size: 0; color: transparent; padding: 0;
+  display: inline-flex; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation; transition: transform .12s ease;
+}
+.checkout-step::before {
+  content: ""; position: absolute; top: 50%; left: 50%;
+  width: 10px; height: 1.6px; border-radius: 2px; background: var(--ink);
+  transform: translate(-50%, -50%);
+}
+.checkout-step[data-checkout-step="up"]::after {
+  content: ""; position: absolute; top: 50%; left: 50%;
+  width: 1.6px; height: 10px; border-radius: 2px; background: var(--ink);
+  transform: translate(-50%, -50%);
+}
+.checkout-step:active { transform: scale(.9); }
+.checkout-item-qty { min-width: 18px; text-align: center; font-size: 16px; font-weight: 600; letter-spacing: .06em; color: var(--ink); }
+.checkout-item-amount { min-width: 56px; text-align: right; font-size: 16px; font-weight: 600; letter-spacing: .04em; }
+
+.history-wrap {
+  width: min(100%, calc(var(--phone-w) - (var(--page-pad) * 2)));
+  margin-inline: auto;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  /* Single column capped to the wrap: the head (HISTORY title + search) has a
+     wider min-content that would otherwise stretch the auto column past the
+     wrap and clip the pills on the right. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  min-height: 0;
+  margin-top: 14px;
+  position: relative;
+  overflow: hidden;
+  touch-action: none;
+  align-self: stretch;
+  height: var(--history-window-height);
+  --history-feather-top: 30px;
+}
+
+.history-wrap::before,
+.history-wrap::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  z-index: 6;
+}
+
+.history-wrap::before {
+  display: none;
+}
+
+.history-wrap::after {
+  bottom: 0;
+  height: 13px;
+  background: linear-gradient(
+    to top,
+    rgba(255,255,255,1) 0%,
+    rgba(255,255,255,.93) 38%,
+    rgba(255,255,255,.52) 72%,
+    rgba(255,255,255,0) 100%
+  );
+}
+
+.history-title {
+  margin: 0;
+  color: var(--muted);
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: .22em;
+  text-align: left;
+  padding-left: 0;
+  padding-right: 0;
+  position: relative;
+  z-index: 8;
+  background: #fff;
+  pointer-events: none;
+}
+
+.history-head::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -13px;
+  height: 13px;
+  background: linear-gradient(
+    to bottom,
+    rgba(255,255,255,1) 0%,
+    rgba(255,255,255,.94) 30%,
+    rgba(255,255,255,.68) 66%,
+    rgba(255,255,255,0) 100%
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+.history-list {
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-top: 14px;
+  padding-bottom: var(--history-list-bottom-pad);
+  padding-left: 6px;
+  padding-right: 6px;
+  overscroll-behavior-y: auto;
+  touch-action: none;
+  scrollbar-width: none;
+  pointer-events: auto;
+  transform: translateY(var(--hist-pull, 0px));
+  transition: transform .36s cubic-bezier(.2, .92, .16, 1);
+  will-change: transform;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.history-list::-webkit-scrollbar {
+  display: none;
+}
+
+.history-wrap.is-pulling .history-list {
+  transition: none;
+}
+
+.history-row {
+  width: 100%;
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--row);
+  padding: 0 14px;
+  font-size: 13px;
+  letter-spacing: .07em;
+  margin-bottom: 6px;
+}
+
+.history-row .date {
+  color: #5a5a5a;
+  letter-spacing: .05em;
+}
+
+.history-row.pending {
+  background: var(--row-pending);
+  border-color: var(--row-pending-stroke);
+}
+
+.account-main .simple-row.wide.pending {
+  background: var(--row-pending);
+  border-color: var(--row-pending-stroke);
+}
+
+.history-row.approved {
+  background: var(--row-approved);
+  border-color: var(--row-approved-stroke);
+}
+
+.account-main .simple-row.wide.approved {
+  background: var(--row-approved);
+  border-color: var(--row-approved-stroke);
+}
+
+/* Impact: pending / actioned amount lists (same colours as account pending/deposited) */
+.screen[data-screen="impact"] .simple-row.pending {
+  background: var(--row-pending);
+  border-color: var(--row-pending-stroke);
+}
+.screen[data-screen="impact"] .simple-row.approved {
+  background: var(--row-approved);
+  border-color: var(--row-approved-stroke);
+}
+.impact-list-label {
+  width: 100%;
+  margin: 12px 0 2px;
+  padding-left: 4px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: .12em;
+  color: var(--muted);
+  text-align: left;
+}
+
+.simple-row,
+.leader-row,
+.history-row {
+  border: 1px solid var(--box-stroke);
+  background-clip: padding-box;
+  box-shadow: var(--box-drop-shadow);
+}
+
+.qty-pebble {
+  border-color: var(--box-stroke);
+  box-shadow: var(--box-drop-shadow);
+}
+
+.money-icon {
+  width: 27px;
+  height: 27px;
+  stroke: #050505;
+  stroke-width: 2.3;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.row-icon.qr-pixel {
+  filter: grayscale(1) contrast(1.08);
+}
+
+.home-hint {
+  position: absolute;
+  inset: auto 0 calc(10px + var(--safe-bottom));
+  height: 4px;
+  width: 116px;
+  margin: auto;
+  border-radius: 99px;
+  background: transparent;
+}
+
+@media (max-height: 790px) {
+  .screen {
+    grid-template-rows:
+      calc(94px + var(--safe-top))
+      1fr
+      calc(74px + var(--safe-bottom));
+  }
+
+  .top {
+    padding-top: calc(20px + var(--safe-top));
+  }
+
+  .bag-button {
+    top: calc(20px + var(--safe-top));             /* keep bag aligned with the shorter header padding */
+  }
+
+  .logo {
+    font-size: 61px;
+  }
+
+  .global-logo,
+  .logo {
+    top: calc(13px + var(--safe-top));   /* keep logo aligned with the shorter compact header */
+  }
+
+  .impact-grid {
+    margin-top: 8px;
+  }
+
+  .points-block {
+    margin-top: 28px;
+  }
+
+  .points {
+    font-size: 82px;
+  }
+
+  .leaderboard {
+    margin-top: 42px;
+  }
+
+  .bottom-nav {
+    padding-bottom: calc(16px + var(--safe-bottom));
+  }
+}
+
+@media (max-width: 480px) and (min-aspect-ratio: 1/2) {
+  /* Short, squat screens (e.g. iPhone SE): trim the hero + vertical gaps so the
+     leaderboard shows ~3 rows instead of 2. Targets the SE's shape (~0.56:1),
+     not tall phones (~0.46:1) or tablets. */
+  .impact-item { grid-template-rows: 68px 22px; }
+  .impact-grid { margin-top: 8px; }
+  .points { font-size: 62px; }
+  .points-block { margin-top: 18px; }
+  .home-leader-rail { margin-top: 20px; }
+  .leader-row { min-height: 38px; }
+  .leader-row + .leader-row { margin-top: 6px; }
+}
+
+@media (min-width: 600px) {
+  /* Tablets / large foldables: the column is far taller than a phone's. Paired
+     with the raised leaderboard cap (app.js), let the rows stretch to fill the
+     taller list window so it lands flush above the nav instead of stopping short.
+     Phones are <=440px wide and never match this, so they're unaffected. */
+  .leader-list {
+    display: flex;
+    flex-direction: column;
+  }
+  .leader-row {
+    flex: 1 1 0;   /* grow to fill the window; base min-height: 42px is the floor */
+  }
+}
+
+/* ============================================================
+   History — selectable rows -> detail, search, expand-to-full
+   ============================================================ */
+.history-head { display: flex; align-items: center; gap: 10px; position: relative; background: #fff; z-index: 8; }
+.history-head .history-title { margin: 0; flex: 0 0 auto; }
+
+.history-plus {
+  margin-left: auto; flex: 0 0 auto; width: 30px; height: 30px;
+  display: grid; place-items: center; padding: 0; border: 0; background: none;
+  cursor: pointer; opacity: .82; transform: rotate(0deg);
+  transition: transform var(--hist-expand-ms, 650ms) cubic-bezier(.2, .86, .18, 1), opacity .2s ease;
+}
+.history-plus:hover { opacity: 1; }
+.history-plus svg { width: 20px; height: 20px; display: block; overflow: visible; }
+.history-plus line { stroke: #101010; stroke-width: 2.4; stroke-linecap: round; }
+.account-content.history-open .history-plus { transform: rotate(225deg); }
+
+.history-search {
+  flex: 1 1 auto; min-width: 0; height: 32px; box-sizing: border-box;
+  border: 0; outline: none; background: var(--row); color: var(--ink);
+  font-family: var(--font-ui); font-size: 13px; letter-spacing: .02em;
+  border-radius: 999px; width: 0; padding: 0; margin: 0; opacity: 0; pointer-events: none;
+  transition: opacity var(--hist-expand-ms, 650ms) ease;
+}
+.account-content.history-open .history-search { width: auto; padding: 0 14px; opacity: 1; pointer-events: auto; }
+
+.history-wrap {
+  transition: transform var(--hist-expand-ms, 650ms) cubic-bezier(.2, .9, .16, 1),
+              height var(--hist-expand-ms, 650ms) cubic-bezier(.2, .9, .16, 1);
+}
+.account-content.history-open .history-wrap { transform: translateY(calc(var(--hist-shift, 0px) * -1)); }
+.account-content .plain-title,
+.account-content .account-main { transition: opacity calc(var(--hist-expand-ms, 650ms) / 2) ease; }
+.account-content.history-open .plain-title,
+.account-content.history-open .account-main { opacity: 0; pointer-events: none; }
+
+.history-row { cursor: pointer; }
+
+.txn-detail {
+  position: absolute; inset: 0; z-index: 80; background: #fff;
+  padding: calc(22px + var(--safe-top)) var(--page-pad) calc(20px + var(--safe-bottom));
+  display: flex; flex-direction: column; gap: 7px; overflow-y: auto;
+  opacity: 0; visibility: hidden; transform: translateX(16px);
+  transition: opacity .3s ease, transform .34s cubic-bezier(.2, .9, .16, 1), visibility 0s linear .34s;
+}
+.txn-detail.open { opacity: 1; visibility: visible; transform: translateX(0);
+  transition: opacity .26s ease, transform .34s cubic-bezier(.2, .9, .16, 1); }
+.txn-back { align-self: flex-start; border: 0; background: none; padding: 6px 2px; margin: 0 0 6px;
+  font-family: var(--font-ui); font-size: 15px; color: var(--muted); cursor: pointer; }
+.txn-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.txn-name { font-family: var(--font-display); font-size: 24px; font-weight: 600; letter-spacing: .02em; }
+.txn-amt { font-family: var(--font-display); font-size: 22px; font-weight: 600; }
+.txn-meta { color: var(--muted); font-size: 13px; letter-spacing: .02em; }
+.txn-status { align-self: flex-start; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+  padding: 5px 12px; border-radius: 999px; margin-top: 2px; }
+.txn-status.txn-pending { background: var(--row-pending); color: #8c2f3a; }
+.txn-status.txn-approved { background: var(--row-approved); color: #2f7a3c; }
+.txn-sec { margin-top: 12px; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--fade); }
+.txn-lines { display: flex; flex-direction: column; }
+.txn-line { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; font-size: 14px;
+  border-bottom: 1px solid rgba(0, 0, 0, .06); }
+.txn-total { font-weight: 600; border-bottom: 0; }
+.txn-kv { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; font-size: 14px; color: var(--ink); }
+.txn-kv span:first-child { color: var(--muted); }
+
+/* ---- Express checkout options + account spacing (added) ---- */
+.account-content .plain-title { margin-bottom: 4px; }
+
+.express-pay { display: grid; gap: 8px; margin-top: 10px; }
+.express-pay-divider {
+  text-align: center; color: var(--muted); font-size: 12px;
+  letter-spacing: .14em; text-transform: uppercase; margin: 2px 0;
+}
+.express-btn {
+  width: 100%; height: 48px; border: 0; border-radius: 999px;
+  font-family: var(--font-ui); font-size: 16px; font-weight: 600; letter-spacing: .02em;
+  cursor: pointer; display: grid; place-items: center;
+  transition: transform .12s ease, filter .12s ease;
+}
+.express-btn:active { transform: translateY(1px); filter: brightness(.96); }
+.express-apple { background: #000; color: #fff; }
+.express-google { background: #fff; color: #3c4043; box-shadow: inset 0 0 0 1px #dadce0; }
+.express-amazon { background: #ffd814; color: #0f1111; }
+
+/* ---- Profile share box + email truncation + checkout bottom feather (added) ---- */
+.email-value {
+  display: inline-block; max-width: 9.5ch; overflow: hidden; white-space: nowrap;
+  vertical-align: bottom;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 0.5ch), transparent 100%);
+  mask-image: linear-gradient(to right, #000 calc(100% - 0.5ch), transparent 100%);
+}
+
+.screen[data-screen="profile"] .email-value {
+  max-width: 22ch;
+  min-width: 0;
+  margin-right: 12px;          /* sit the value within the pill's rounded end, not jammed at the edge */
+  font-size: 13px;
+  letter-spacing: .035em;
+  text-overflow: ellipsis;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+.share-box {
+  margin-top: 4px; border-radius: 18px; background: var(--row);
+  padding: 14px 16px; display: grid; gap: 12px;
+}
+.share-line { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; }
+.share-label {
+  display: inline-flex; align-items: center; gap: 8px;
+  color: var(--muted); font-size: 13px; letter-spacing: .06em; white-space: nowrap;
+}
+.share-value {
+  min-width: 0; font-size: 15px; letter-spacing: .03em; text-align: left;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.copy-btn {
+  border: 0; background: #050505; color: #fff; border-radius: 999px;
+  height: 30px; padding: 0 14px; font-family: var(--font-ui);
+  font-size: 12px; letter-spacing: .1em; text-transform: uppercase; cursor: pointer;
+  transition: background .2s ease;
+}
+.copy-btn.copied { background: #2f7a3c; }
+/* Profile referral box: a guest account shows "Not activated" + an activate
+   button that opens the scanner; an active account shows the code/QR lines. */
+.share-inactive { display: grid; gap: 12px; }
+.share-inactive-label { font-size: 15px; letter-spacing: .03em; color: var(--muted); }
+.share-activate {
+  width: 100%; min-height: 44px; border: 0; border-radius: 999px;
+  background: #050505; color: #fff; font-family: var(--font-ui);
+  font-size: 13px; font-weight: 650; letter-spacing: .1em;
+  text-transform: uppercase; cursor: pointer;
+}
+html[data-account-status="active"] .share-inactive { display: none; }
+html[data-account-status="guest"] .share-active-only { display: none; }
+.share-show {
+  width: 100%; height: 42px; border: 0; border-radius: 999px;
+  background: transparent; box-shadow: inset 0 0 0 1px rgba(0,0,0,.16);
+  color: var(--ink); font-family: var(--font-ui); font-size: 14px;
+  letter-spacing: .06em; cursor: pointer; margin-top: 2px;
+}
+.screen[data-screen="checkout"] .bottom-nav::before {
+  top: -26px; height: 26px;
+  background: linear-gradient(
+    to top,
+    #ffffff 0%,
+    #ffffff 80%,
+    rgba(255,255,255,.5) 91%,
+    rgba(255,255,255,0) 100%
+  );
+}
+
+/* ---- (1) checkout top feather, (3) settings title up, (7) leaderboard expand, (4) impact page ---- */
+.screen[data-screen="checkout"] .top::after {
+  content: ""; position: absolute; left: 0; right: 0;
+  top: calc(100% - 2px); height: 14px;
+  background: linear-gradient(
+    to bottom,
+    rgba(255,255,255,1) 0%,
+    rgba(255,255,255,.92) 34%,
+    rgba(255,255,255,.58) 70%,
+    rgba(255,255,255,0) 100%
+  );
+  pointer-events: none; z-index: 6;
+}
+
+.screen[data-screen="settings"] .plain-content { align-content: start; }
+
+/* Leaderboard plus-to-expand (mirrors history) */
+.leader-head { display: flex; align-items: center; gap: 10px; position: relative; background: #fff; z-index: 8; }
+.leader-head .leader-title { flex: 0 0 auto; }
+.leader-plus {
+  margin-left: auto; flex: 0 0 auto; width: 30px; height: 30px;
+  display: grid; place-items: center; padding: 0; border: 0; background: none;
+  cursor: pointer; opacity: .82; transform: rotate(0deg);
+  transition: transform var(--hist-expand-ms, 650ms) cubic-bezier(.2, .86, .18, 1), opacity .2s ease;
+}
+.leader-plus:hover { opacity: 1; }
+.leader-plus svg { width: 20px; height: 20px; display: block; overflow: visible; }
+.leader-plus line { stroke: #101010; stroke-width: 2.4; stroke-linecap: round; }
+.home-content.leader-open .leader-plus { transform: rotate(225deg); }
+
+.home-content .impact-grid,
+.home-content .points-block { transition: opacity calc(var(--hist-expand-ms, 650ms) / 2) ease; }
+.home-content.leader-open .impact-grid,
+.home-content.leader-open .points-block { opacity: 0; pointer-events: none; }
+.home-content .home-leader-rail { transition: transform var(--hist-expand-ms, 650ms) cubic-bezier(.2, .9, .16, 1); }
+.home-content.leader-open .home-leader-rail { transform: translateY(var(--leader-shift, 0px)); position: relative; z-index: 9; }
+.leader-wrap { transition: height var(--hist-expand-ms, 650ms) cubic-bezier(.2, .9, .16, 1); }
+
+/* Impact calculator */
+.impact-cta {
+  display: block; margin: 14px auto 0; height: 40px; padding: 0 22px; border: 0;
+  border-radius: 999px; background: #050505; color: #fff; font-family: var(--font-ui);
+  font-size: 13px; letter-spacing: .12em; text-transform: uppercase; cursor: pointer;
+}
+.impact-note { color: var(--muted); font-size: 14px; letter-spacing: .04em; text-align: center; margin: 0 0 18px; }
+.impact-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; width: min(100%, calc(var(--phone-w) - var(--page-pad) * 2)); }
+.impact-card { background: var(--row); border: 1px solid var(--box-stroke); background-clip: padding-box; box-shadow: var(--box-drop-shadow); border-radius: 18px; padding: 16px 6px; display: grid; gap: 4px; justify-items: center; }
+.impact-card-val { font-family: var(--font-display); font-size: 21px; font-weight: 700; letter-spacing: .01em; }
+.impact-card-lbl { color: var(--muted); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
+.impact-stepper { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 22px; }
+.impact-stepper-label { color: var(--muted); font-size: 13px; letter-spacing: .08em; text-transform: uppercase; }
+.impact-step { width: 38px; height: 38px; border: 0; border-radius: 999px; background: #050505; color: #fff; font-size: 22px; line-height: 1; cursor: pointer; display: grid; place-items: center; }
+.impact-qty { min-width: 30px; text-align: center; font-family: var(--font-display); font-size: 22px; font-weight: 700; }
+.impact-fine { color: var(--muted); font-size: 12px; line-height: 1.5; letter-spacing: .02em; text-align: center; margin: 22px auto 0; max-width: 32ch; }
+
+/* ---- referral/address boxes (7,13), gift wrap (18), impact sub (10), editable (12) ---- */
+.share-box, .info-box {
+  margin-top: 14px; width: 100%; box-sizing: border-box;
+  background: var(--row); border-radius: 22px; padding: 16px 18px;
+  display: grid; gap: 12px;
+}
+.share-title {
+  color: var(--muted); font-family: var(--font-display); font-size: 13px;
+  letter-spacing: .2em; text-transform: uppercase;
+}
+.share-line { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; }
+.share-value { font-size: 17px; letter-spacing: .08em; }
+.share-qr { display: flex; align-items: center; }
+.share-qr img { width: 52px; height: 52px; display: block; }
+.address-row { display: grid; grid-template-columns: 84px 1fr; align-items: center; gap: 12px; }
+.addr-k { color: var(--muted); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; }
+/* The form wrapper exists so iOS groups the fields for Contact AutoFill; it
+   must not affect the box layout. The .addr-v fields are real inputs (AutoFill
+   only works on form controls, not contenteditable), reset to read as plain
+   text until the box enters editing mode. */
+.addr-form { display: contents; }
+.addr-v {
+  font-size: 15px;
+  letter-spacing: .04em;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  outline: none;
+  border-radius: 0;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.impact-sub { color: var(--muted); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; text-align: center; margin: 20px 0 10px; }
+.editable-field { cursor: pointer; }
+.gift-row { cursor: pointer; }
+.gift-right { display: inline-flex; align-items: center; gap: 12px; }
+.gift-fee { color: var(--muted); font-size: 14px; letter-spacing: .04em; }
+.gift-switch { position: relative; width: 44px; height: 26px; display: inline-block; flex: 0 0 auto; }
+.gift-switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; z-index: 2; }
+.gift-knob { position: absolute; inset: 0; border-radius: 999px; background: rgba(0,0,0,.18); transition: background .2s ease; }
+.gift-knob::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 999px; background: #fff; transition: transform .2s ease; }
+.gift-switch input:checked + .gift-knob { background: #2f7a3c; }
+.gift-switch input:checked + .gift-knob::after { transform: translateX(18px); }
+
+/* ---- (1,4) bag -> settings: fade the INCOMING settings nav + top smoothly during the
+   exit slide (mirrors bag-to-qr-switch) instead of snapping via the late
+   bag-target-settings (transition:none), which read as a delay / jank ---- */
+.phone.bag-to-settings-switch .screen[data-screen="settings"].active .bottom-nav {
+  opacity: 1 !important; transition: none !important;
+}
+.phone.bag-to-settings-switch .screen[data-screen="settings"].active .bottom-nav button {
+  opacity: .22 !important;
+  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1) !important;
+}
+.phone.bag-to-settings-switch .screen[data-screen="settings"].active .bottom-nav button[data-go="settings"] {
+  opacity: 1 !important;
+}
+.phone.bag-to-settings-switch .screen[data-screen="settings"].active .top > :not(.logo) {
+  opacity: .22 !important;
+  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1) !important;
+}
+
+/* ---- (14) purchase history + (15) linked products settings pages ---- */
+.purchases-content, .linked-content { align-content: start; }
+.purchase-list, .linked-list { width: 100%; display: grid; gap: 10px; }
+.purchase-row { width: 100%; padding: 0 27px; }
+.purchase-plus { font-size: 22px; line-height: 1; color: #101010; transition: transform .3s ease; display: inline-block; }
+.purchase-item.open .purchase-plus { transform: rotate(45deg); }
+.purchase-detail { max-height: 0; overflow: hidden; opacity: 0; padding: 0 18px; display: grid; gap: 8px; transition: max-height .42s cubic-bezier(.2,.9,.16,1), opacity .3s ease, padding .42s ease; }
+.purchase-item.open .purchase-detail { max-height: 240px; opacity: 1; padding: 12px 18px 6px; }
+.purchase-kv { display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: center; }
+.purchase-kv span:first-child { color: var(--muted); letter-spacing: .1em; text-transform: uppercase; font-size: 11px; }
+.purchase-kv span:last-child { text-align: right; letter-spacing: .03em; font-size: 13px; }
+.linked-note { color: var(--muted); font-size: 13px; line-height: 1.5; letter-spacing: .02em; text-align: center; margin: 0 auto 16px; max-width: 30ch; }
+.linked-empty { width: 100%; padding: 22px 18px; border: 1px solid var(--box-stroke); border-radius: 18px; background: rgba(255, 255, 255, .72); text-align: center; box-shadow: var(--box-drop-shadow); }
+.linked-empty[hidden] { display: none; }
+.linked-empty p { margin: 0; color: #080808; font-size: 15px; letter-spacing: .08em; }
+.linked-empty span { display: block; margin-top: 7px; color: var(--muted); font-size: 12px; line-height: 1.4; letter-spacing: .025em; }
+.qr-mini { width: 22px; height: 22px; }
+.linked-status { color: #2f7a3c; font-size: 13px; letter-spacing: .08em; }
+.linked-row { width: 100%; text-align: left; }
+.linked-row::after { content: "›"; margin-left: 10px; color: #777; font-size: 20px; }
+.linked-add { margin: 18px auto 0; height: 44px; border: 0; border-radius: 999px; background: #050505; color: #fff; font-family: var(--font-ui); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; cursor: pointer; display: inline-flex; align-items: center; gap: 10px; justify-content: center; padding: 0 22px; }
+.linked-add .qr-mini { filter: invert(1); }
+
+.linked-referral { display: none; width: 100%; }
+.linked-referral.open { display: block; }
+.screen[data-screen="linked"].referral-open .plain-title,
+.screen[data-screen="linked"].referral-open .linked-note,
+.screen[data-screen="linked"].referral-open .linked-list,
+.screen[data-screen="linked"].referral-open .linked-empty,
+.screen[data-screen="linked"].referral-open .linked-add { display: none; }
+.linked-referral-close { margin: 0 0 14px; padding: 0; background: transparent; color: #111; font-size: 14px; letter-spacing: .04em; }
+.linked-referral-card { padding: 20px; border: 1px solid var(--box-stroke); border-radius: 18px; background: rgba(255,255,255,.78); box-shadow: var(--box-drop-shadow); text-align: center; }
+.linked-referral-name,
+.linked-referral-colour,
+.linked-referral-code,
+.linked-referral-status { margin: 0; }
+.linked-referral-name { font-size: 22px; letter-spacing: .14em; }
+.linked-referral-colour { margin-top: 6px; color: var(--muted); font-size: 14px; letter-spacing: .1em; }
+.linked-referral-code { margin-top: 14px; font-size: 12px; font-weight: 650; letter-spacing: .08em; }
+.linked-referral-status { margin-top: 7px; color: #2f7a3c; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; }
+.linked-referral-qr { margin: 16px auto 0; padding: 16px; border-radius: 18px; background: #fff; text-align: center; }
+.linked-referral-qr[hidden] { display: none; }
+.linked-referral-qr img { display: block; width: 150px; height: 150px; margin: 0 auto; }
+.linked-referral-qr span { display: block; margin-top: 8px; color: var(--muted); font-size: 10px; letter-spacing: .07em; text-transform: uppercase; }
+.linked-referral-link-label { display: block; margin: 16px 0 7px; color: var(--muted); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
+.linked-referral-link { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--box-stroke); border-radius: 14px; background: #fff; color: #111; font: 12px/1.35 var(--font-ui); }
+.linked-referral-actions { display: grid; gap: 8px; margin-top: 12px; }
+.linked-referral-actions button { min-height: 42px; border-radius: 15px; background: rgba(0,0,0,.07); color: #111; font-size: 12px; font-weight: 650; letter-spacing: .035em; }
+.linked-referral-actions .linked-referral-copy { background: #111; color: #fff; }
+.linked-referral-actions button[hidden] { display: none; }
+
+/* ---- bag icon = the prominent top icon on the bag screen, exactly as the balance is
+   on the account screen. The smooth "money icon" behaviour is: account-closing HOLDS the
+   balance opaque (opacity:1) through the close and lets the destination's dim balance take
+   over -- it never dims mid-transition. The bag was instead forcing the bag icon to .26
+   mid-transition (switch rules overriding its opacity:1 hold), which read as janky. Hold the
+   bag icon opaque through every bag close so it mirrors the money icon. ---- */
+.phone.bag-closing .screen[data-screen="bag"].active .top .bag-button,
+.phone.bag-scan-switch .screen[data-screen="bag"] .top .bag-button,
+.phone.bag-to-settings-switch .screen[data-screen="bag"].active .top .bag-button {
+  opacity: 1 !important;
+  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1) !important;
+}
+
+/* ---- bag -> bottom-icon: the bag-nonhome-reveal choreography already fades the bag body
+   (::before, .content, .plain-content, .shop-content, .product-render) away to reveal the
+   destination underneath -- but it omitted .top, so the bag chrome (incl. the bag icon)
+   stayed pinned and was poked in place, which read as janky. Fade the top chrome out WITH
+   the body so the bag icon cross-fades into the destination's dim icon underneath, exactly
+   like the money->bottom screen cross-fade. (Held opaque above, so it reads opaque -> dim.) ---- */
+.phone.bag-closing.bag-nonhome-reveal .screen[data-screen="bag"].active .top {
+  opacity: 0;
+  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1);
+}
+
+/* ---- batch: linked boxes taller+flat (#2), profile scrollbar hidden (#7),
+   address-box edit button + relative box (#3) ---- */
+.linked-row { min-height: 72px; border-radius: 18px; }
+
+.screen[data-screen="profile"] .content { scrollbar-width: none; }
+.screen[data-screen="profile"] .content::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+.info-box { position: relative; }
+.info-edit {
+  position: absolute; top: 13px; right: 15px; border: 0; background: none;
+  color: var(--muted); font-family: var(--font-ui); font-size: 12px;
+  letter-spacing: .12em; text-transform: uppercase; cursor: pointer; padding: 4px 6px; opacity: .82;
+}
+.info-edit:active { opacity: 1; }
+
+/* ---- checkout: discount-code box + bottom clearance so the last express button
+   rests clear of the (smoother, taller) bottom feather ---- */
+.plain-content.checkout-content { padding-bottom: 32px; }
+.discount-row { margin-top: 10px; }
+.discount-field {
+  width: 100%; min-width: 0; border: 0; background: transparent;
+  font-family: var(--font-ui); font-size: 16px; letter-spacing: .06em;
+  color: var(--ink); padding: 0 0 0 1px;
+}
+.discount-field::placeholder { color: rgba(0,0,0,.42); letter-spacing: .06em; }
+.discount-field:focus { outline: none; }
+.discount-apply {
+  border: 0; background: #050505; color: #fff; border-radius: 999px;
+  height: 34px; padding: 0 18px; font-family: var(--font-ui); font-size: 12px;
+  letter-spacing: .1em; text-transform: uppercase; cursor: pointer; white-space: nowrap;
+  transition: background .2s ease;
+}
+.discount-apply.applied { background: #2f7a3c; }
+
+/* ================= GIFT WRAP: tickbox + slide-in configurator ================= */
+/* gold-standard square tickbox (used on checkout row, per-item rows, card row) */
+.gift-check { position: relative; display: inline-block; box-sizing: border-box; width: 24px; height: 24px; min-width: 24px; flex: 0 0 24px; vertical-align: middle; }
+.gift-check input { position: absolute; top: 0; left: 0; width: 24px; height: 24px; opacity: 0; margin: 0; cursor: pointer; z-index: 2; }
+.gift-tick { position: absolute; top: 0; left: 0; width: 24px; height: 24px; box-sizing: border-box; border-radius: 7px; border: 2px solid #b6bac1; background: #fff; transition: background-color .16s ease, border-color .16s ease; pointer-events: none; }
+.gift-check input:checked + .gift-tick {
+  background-color: #2f7a3c; border-color: #2f7a3c;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='%23ffffff' stroke-width='3.6' stroke-linecap='round' stroke-linejoin='round' d='M5 12.5l4.5 4.5L19 7'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: center; background-size: 16px 16px;
+}
+
+/* checkout gift row -> tickbox layout + selected bounding box */
+.gift-row { cursor: pointer; }
+.gift-row .row-left { gap: 12px; }
+.gift-label-text { letter-spacing: .14em; }
+.gift-fee { color: var(--muted); font-size: 14px; letter-spacing: .04em; white-space: nowrap; }
+.gift-row.selected { box-shadow: inset 0 0 0 1.6px rgba(47, 122, 60, .55); }
+
+/* slide-in panel */
+.giftwrap-panel {
+  position: absolute; inset: 0; z-index: 60; background: #fff;
+  transform: translateX(100%); transition: transform .42s cubic-bezier(.22, .82, .2, 1);
+  visibility: hidden; pointer-events: none;
+}
+.giftwrap-panel.open { transform: translateX(0); visibility: visible; pointer-events: auto; }
+.giftwrap-inner {
+  height: 100%; box-sizing: border-box; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: calc(26px + var(--safe-top)) var(--page-pad) calc(24px + var(--safe-bottom));
+  display: flex; flex-direction: column; gap: 12px; scrollbar-width: none;
+}
+.giftwrap-inner::-webkit-scrollbar { display: none; width: 0; }
+.giftwrap-back {
+  align-self: flex-start; border: 0; background: none; color: var(--muted);
+  font-family: var(--font-ui); font-size: 14px; letter-spacing: .08em; cursor: pointer; padding: 0;
+}
+.giftwrap-panel .plain-title { margin: 2px 0 2px; transform: none; }
+.gift-intro { color: var(--muted); font-size: 13px; line-height: 1.5; letter-spacing: .02em; text-align: center; margin: 0 auto 6px; max-width: 32ch; }
+.gift-section-label { color: var(--muted); font-size: 12px; letter-spacing: .14em; text-transform: uppercase; margin: 8px 0 0; }
+
+.gift-items { display: grid; gap: 8px; }
+.gift-item { display: flex; align-items: center; gap: 12px; min-height: 54px; padding: 0 16px; border-radius: 16px; background: var(--row); cursor: pointer; }
+.gift-item-name { flex: 1; min-width: 0; font-size: 16px; letter-spacing: .06em; color: #080808; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gift-item-qty { color: var(--muted); font-size: 14px; letter-spacing: .06em; flex: 0 0 auto; }
+.gift-empty { color: var(--muted); font-size: 14px; opacity: .6; padding: 4px 2px; }
+
+.gift-papers { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+.gift-paper { aspect-ratio: 1 / 1; border-radius: 14px; border: 0; cursor: pointer; padding: 0; position: relative; box-shadow: inset 0 0 0 1px rgba(0,0,0,.08); transition: transform .14s ease, box-shadow .14s ease; }
+.gift-paper.sel { box-shadow: inset 0 0 0 2px #2f7a3c, 0 3px 9px rgba(0,0,0,.14); transform: translateY(-2px); }
+.gift-paper.sel::after { content: ""; position: absolute; right: 6px; bottom: 7px; width: 5px; height: 9px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); filter: drop-shadow(0 0 1px rgba(0,0,0,.45)); }
+.gift-paper-0 { background-color: #c9a16b; background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.18) 0 6px, transparent 6px 12px); }
+.gift-paper-1 { background-color: #b5403a; background-image: repeating-linear-gradient(90deg, rgba(255,255,255,.5) 0 4px, transparent 4px 14px); }
+.gift-paper-2 { background-color: #2f6b46; background-image: radial-gradient(circle at 30% 30%, rgba(255,255,255,.4) 1.6px, transparent 2.4px), radial-gradient(circle at 70% 70%, rgba(255,255,255,.4) 1.6px, transparent 2.4px); background-size: 15px 15px; }
+.gift-paper-3 { background-color: #2c3e7a; background-image: repeating-linear-gradient(135deg, rgba(255,255,255,.22) 0 5px, transparent 5px 13px); }
+.gift-paper-4 { background-image: linear-gradient(135deg, #e3c170, #b8893a); }
+.gift-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 6px 0 2px; }
+.gift-card-opt { aspect-ratio: 3 / 4; border-radius: 10px; border: 0; cursor: pointer; padding: 0; position: relative; box-shadow: inset 0 0 0 1px rgba(0,0,0,.10); transition: transform .14s ease, box-shadow .14s ease; background-size: cover; background-position: center; }
+.gift-card-opt.sel { box-shadow: inset 0 0 0 2px #2f7a3c, 0 3px 9px rgba(0,0,0,.14); transform: translateY(-2px); }
+.gift-card-opt.sel::after { content: ""; position: absolute; right: 5px; bottom: 6px; width: 5px; height: 9px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); filter: drop-shadow(0 0 1px rgba(0,0,0,.5)); }
+.gift-card-opt-0 { background-color: #efe7d6; background-image: linear-gradient(transparent 45%, rgba(90,68,40,.28) 45% 47%, transparent 47%, transparent 55%, rgba(90,68,40,.18) 55% 57%, transparent 57%); }
+.gift-card-opt-1 { background-color: #f0d8da; background-image: radial-gradient(circle at 50% 40%, rgba(178,64,76,.42) 14%, transparent 16%); }
+.gift-card-opt-2 { background-color: #d9e6da; background-image: linear-gradient(135deg, transparent 42%, rgba(54,110,72,.34) 42% 46%, transparent 46%); }
+.gift-card-opt-3 { background-color: #d4dae8; background-image: radial-gradient(circle, rgba(52,72,132,.42) 1.2px, transparent 1.7px); background-size: 9px 9px; }
+
+.gift-card-row { margin-top: 4px; }
+.gift-card-panel { max-height: 0; overflow: hidden; opacity: 0; transition: max-height .3s ease, opacity .3s ease, margin .3s ease; }
+.gift-card-panel.open { max-height: 360px; opacity: 1; margin-top: 2px; }
+.gift-card-panel textarea {
+  width: 100%; box-sizing: border-box; min-height: 96px; resize: none;
+  border-radius: 16px; border: 1px solid var(--box-stroke); background: #fff;
+  padding: 12px 14px; font-family: var(--font-ui); font-size: 15px; letter-spacing: .03em; line-height: 1.5; color: var(--ink);
+}
+.gift-card-panel textarea:focus { outline: none; border-color: rgba(47,122,60,.6); }
+.gift-card-panel textarea::placeholder { color: rgba(0,0,0,.4); }
+
+.gift-done { margin-top: 12px; width: 100%; height: 52px; border: 1px solid var(--box-stroke); border-radius: 18px; background: #050505; color: #fff; box-shadow: var(--box-drop-shadow); font-family: var(--font-ui); font-size: 16px; letter-spacing: .12em; cursor: pointer; transition: transform .12s ease; }
+.gift-done:active { transform: translateY(1px); }
+
+/* ---- (batch) box-style parity + purchase tints + linked two-line ---- */
+.share-box, .info-box { border: 1px solid var(--box-stroke); background-clip: padding-box; box-shadow: var(--box-drop-shadow); }
+.express-btn { border: 1px solid var(--box-stroke); box-shadow: var(--box-drop-shadow); }
+.gift-item { border: 1px solid var(--box-stroke); background-clip: padding-box; box-shadow: var(--box-drop-shadow); }
+
+.linked-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.linked-name { font-size: 17px; letter-spacing: .14em; color: #080808; line-height: 1.05; }
+.linked-variant { font-size: 13px; letter-spacing: .1em; color: var(--muted); line-height: 1.05; }
+
+.purchase-row.pr-dark { background: rgba(120, 78, 50, .13); }
+.purchase-row.pr-cherry { background: rgba(190, 55, 70, .12); }
+.purchase-row.pr-blue { background: rgba(48, 95, 175, .12); }
+.purchase-row.pr-lemon { background: rgba(206, 168, 38, .16); }
+
+/* profile: top-header feather (mirrors the checkout top feather) */
+.screen[data-screen="profile"] .top::after {
+  content: ""; position: absolute; left: 0; right: 0;
+  top: calc(100% - 2px); height: 14px;
+  background: linear-gradient(
+    to bottom,
+    rgba(255,255,255,1) 0%,
+    rgba(255,255,255,.92) 34%,
+    rgba(255,255,255,.58) 70%,
+    rgba(255,255,255,0) 100%
+  );
+  pointer-events: none; z-index: 6;
+}
+
+/* gift wrap: per-SKU configurable units */
+.gift-units { display: grid; gap: 10px; }
+.gift-unit { border: 1px solid var(--box-stroke); background-clip: padding-box; box-shadow: var(--box-drop-shadow); background: var(--row); border-radius: 18px; overflow: hidden; }
+.gift-unit-head { display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 0 16px; cursor: pointer; margin: 0; }
+.gift-unit-name { flex: 1; min-width: 0; font-size: 16px; letter-spacing: .06em; color: #080808; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gift-unit-qty { color: var(--muted); font-size: 14px; letter-spacing: .06em; flex: 0 0 auto; }
+.gift-unit-body { max-height: 0; overflow: hidden; opacity: 0; padding: 0 16px; display: grid; gap: 8px; transition: max-height .36s cubic-bezier(.2,.9,.16,1), opacity .28s ease, padding .36s ease; }
+.gift-unit.wrapped .gift-unit-body { max-height: 460px; opacity: 1; padding: 2px 16px 14px; }
+.gift-unit .gift-section-label { margin: 2px 0 0; }
+.gift-unit-card-row { display: flex; align-items: center; gap: 12px; min-height: 40px; cursor: pointer; font-size: 15px; letter-spacing: .06em; color: #080808; margin: 2px 0 0; }
+
+/* leaderboard / transactions: keep rows clear of the head fade (box above the feathering) */
+.history-head::after { display: none; }
+
+/* inline address editing (no popup) */
+.info-box.editing .addr-v {
+  background: #fff; border: 1px solid var(--box-stroke); border-radius: 8px;
+  padding: 3px 9px; outline: none; min-height: 1.1em;
+}
+.info-box.editing .addr-v:focus { border-color: rgba(47, 122, 60, .65); }
+.info-edit.editing-on { color: #2f7a3c; }
+
+/* checkout: hide the scrollbar on the right */
+.checkout-content { scrollbar-width: none; }
+.checkout-content::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+/* Prevent iOS WKWebView auto-zoom when form controls receive focus. */
+.phone input,
+.phone textarea,
+.phone select,
+.phone [contenteditable="true"] {
+  font-size: 16px;
+}
+
+/* contenteditable fields (e.g. the profile address) must be selectable/editable;
+   the global `.phone *:not(input):not(textarea){user-select:none}` would otherwise
+   strip the caret on iOS and block typing. */
+.phone [contenteditable="true"] {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  -webkit-touch-callout: default;
+}
+
+/* History pills side clipping fix.
+   The history list is inside overflow clipped containers.
+   The old 6px side gutter can clip the pill border and shadow.
+   This widens the gutter slightly while keeping the layout stable. */
+.history-list {
+  padding-left: 12px;
+  padding-right: 12px;
+  /* Grid item of .history-wrap: without this it grows to its content's
+     intrinsic (min-content) width — ~353px against a 317px wrap — and the
+     pills overflow + clip on the right. min-width:0 lets it shrink to fit. */
+  min-width: 0;
+}
+
+.history-row {
+  max-width: 100%;
+}
+
+/* History header top feather overlap fix.
+   The account top bar feather sits above normal content.
+   When History expands, lift the expanded account content above that feather
+   so the search box is not washed out. */
+.account-content.history-open {
+  z-index: 61;
+}
+
+/* ---------------------------------------------------------------------------
+   History bottom feather expand/collapse flicker fix.
+   The old fade was .history-wrap::after, attached to the element that animates
+   transform and height. That made the feather move upward, disappear, snap back,
+   then reappear during expand/collapse.
+
+   This paints the feather on the stable account content layer instead, and
+   disables the old animated pseudo-element.
+--------------------------------------------------------------------------- */
+.account-content::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 7px;
+  height: 13px;
+  background: linear-gradient(
+    to top,
+    rgba(255,255,255,1) 0%,
+    rgba(255,255,255,.93) 38%,
+    rgba(255,255,255,.52) 72%,
+    rgba(255,255,255,0) 100%
+  );
+  pointer-events: none;
+  z-index: 7;
+}
+
+.history-wrap::after {
+  display: none;
+}
+
+/* ---------------------------------------------------------------------------
+   Bottom feathers (History + Leaderboard) -> stable parents.
+   Both feathers were mounted on animating scroll-windows (.history-wrap /
+   .leader-wrap animate transform + height), so they jolted/vanished on expand.
+   Repaint the identical gradient on the NON-animating .account-content and
+   .home-content (both position:relative via .content; bottom = navTop; collapsed
+   window bottom = navTop-6) and retire the animated pseudo-elements. z-10 clears
+   the leaderboard rail's z-9 when expanded. pointer-events:none, account/home only.
+   TUNE: `bottom` = vertical alignment; `height` = how far up rows fade.
+--------------------------------------------------------------------------- */
+.account-content::after,
+.home-content::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 6px;
+  height: 13px;
+  background: linear-gradient(
+    to top,
+    rgba(255,255,255,1) 0%,
+    rgba(255,255,255,.93) 38%,
+    rgba(255,255,255,.52) 72%,
+    rgba(255,255,255,0) 100%
+  );
+  pointer-events: none;
+  z-index: 10;
+}
+.history-wrap::after { display: none; }
+.leader-wrap::after  { display: none; }
+
+/* Leaderboard feather override — taller/lower than History (rows are 42px, not 34px) */
+.home-content::after { bottom: 4px; height: 22px; }
+
+
+
+/* ---------------------------------------------------------------------------
+   Feather + expand polish (iPhone)
+   1. Opaque feather: bottom feathers go mostly-solid white so list rows cannot be
+      seen through them during the collapse animation. Short soft top edge kept.
+   2. Faster home background fade: when the leaderboard expands, the points block and
+      impact tiles fade out faster (was ~325ms), which also clears the area sooner.
+--------------------------------------------------------------------------- */
+.account-content::after,
+.home-content::after {
+  background: linear-gradient(
+    to top,
+    rgba(255,255,255,1) 0%,
+    rgba(255,255,255,1) 72%,
+    rgba(255,255,255,0) 100%
+  );
+}
+.home-content .impact-grid,
+.home-content .points-block {
+  transition: opacity 180ms ease-out;
+}
+
+/* Feather fully solid — removes the soft top edge entirely so there is NO
+   translucent zone for rows to read through (collapse) or flash through (expand).
+   Trade-off: a crisp fade-to-white edge instead of a soft gradient. */
+.account-content::after,
+.home-content::after {
+  background: #fff;
+}
+
+
+/* ---------------------------------------------------------------------------
+   Collapse polish (iPhone)
+   1. Home content (points/impact tiles, and History account tiles/title) fades
+      back in only AFTER the list finishes collapsing, so it no longer shows
+      through the list during the collapse slide. Immediate fade-out on expand.
+   2. Soft feather restored: replaces the solid white block with a smooth fade,
+      slightly taller, so the partial bottom row fades away instead of a hard line.
+--------------------------------------------------------------------------- */
+.home-content .impact-grid,
+.home-content .points-block,
+.account-content .account-main,
+.account-content .plain-title {
+  transition: opacity 200ms ease-out var(--hist-expand-ms, 650ms);
+}
+.home-content.leader-open .impact-grid,
+.home-content.leader-open .points-block,
+.account-content.history-open .account-main,
+.account-content.history-open .plain-title {
+  transition: opacity 160ms ease-out 0ms;
+}
+.account-content::after {
+  height: 26px;
+  background: linear-gradient(to top, #fff 0%, #fff 38%, rgba(255,255,255,.55) 72%, rgba(255,255,255,0) 100%);
+}
+.home-content::after {
+  height: 34px;
+  background: linear-gradient(to top, #fff 0%, #fff 38%, rgba(255,255,255,.55) 72%, rgba(255,255,255,0) 100%);
+}
+
+/* ---------------------------------------------------------------------------
+   Collapse polish v2 (iPhone)
+   A. Home content fades in/out SYNCED to the list slide (was delayed -> blank on
+      collapse; was too fast -> flash on expand). Same duration as the slide.
+   B. Scroll windows get a solid white background so content behind never shows
+      through the gaps between rows (the see-through to the balance writing).
+   C. Feather pushed to the very bottom edge + more opaque base, so the bottom
+      partial row fades fully with no hard line.
+--------------------------------------------------------------------------- */
+.home-content .impact-grid,
+.home-content .points-block,
+.account-content .account-main,
+.account-content .plain-title,
+.home-content.leader-open .impact-grid,
+.home-content.leader-open .points-block,
+.account-content.history-open .account-main,
+.account-content.history-open .plain-title {
+  transition: opacity var(--hist-expand-ms, 650ms) ease !important;
+}
+.leader-wrap,
+.history-wrap {
+  background: #fff;
+}
+.account-content::after {
+  bottom: 0;
+  height: 30px;
+  background: linear-gradient(to top, #fff 0%, #fff 46%, rgba(255,255,255,.5) 76%, rgba(255,255,255,0) 100%);
+}
+.home-content::after {
+  bottom: 0;
+  height: 38px;
+  background: linear-gradient(to top, #fff 0%, #fff 46%, rgba(255,255,255,.5) 76%, rgba(255,255,255,0) 100%);
+}
+
+/* ---------------------------------------------------------------------------
+   Collapsed glance cap (iPhone)
+   Render-once keeps every row in the DOM (so expand/collapse never rebuilds and
+   never flashes). But that let the COLLAPSED list scroll through everyone. Cap
+   the collapsed list to its glance count (leaderboard top 10, history top 20);
+   expanded still shows all rows. Pure show/hide, no re-render.
+--------------------------------------------------------------------------- */
+.home-content:not(.leader-open) .leader-list .leader-row:nth-child(n+11) { display: none; }
+.account-content:not(.history-open) .history-list .history-row:nth-child(n+21) { display: none; }
+
+/* ---------------------------------------------------------------------------
+   Expand speed (iPhone) — slow both the leaderboard and History expand/collapse
+   ~50% (650ms -> 975ms). A slower slide keeps the height + transform animations
+   in sync, which removes the slight bottom-edge flash on the History expand.
+   This single var drives both lists for expand, collapse, and the fade.
+--------------------------------------------------------------------------- */
+:root { --hist-expand-ms: 975ms; }
+
+/* ---------------------------------------------------------------------------
+   History transform/height split (iPhone)
+   Match the leaderboard: the rail carries the transform, the wrap carries height
+   only. No single element animates transform + height, which was the bottom-edge
+   flash on the History expand.
+--------------------------------------------------------------------------- */
+.history-rail {
+  transition: transform var(--hist-expand-ms, 650ms) cubic-bezier(.2, .9, .16, 1);
+  align-self: stretch;
+  min-height: 0;
+}
+.account-content.history-open .history-rail {
+  transform: translateY(calc(var(--hist-shift, 0px) * -1));
+  position: relative;
+  z-index: 9;
+}
+.account-content.history-open .history-wrap { transform: none; }
+.history-wrap { transition: height var(--hist-expand-ms, 650ms) cubic-bezier(.2, .9, .16, 1); }
+
+/* ---------------------------------------------------------------------------
+   History width fix (iPhone)
+   The rail (now the grid item) owns the width + centering the wrap used to have,
+   and the wrap fills it. Restores the collapsed list width that the wrapper shrank.
+--------------------------------------------------------------------------- */
+.history-rail {
+  width: min(100%, calc(var(--phone-w) - (var(--page-pad) * 2)));
+  margin-inline: auto;
+}
+.history-wrap {
+  width: 100%;
+  margin-inline: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Linked Products card layout fix
+   Force the linked row onto one vertically-centred line so the chevron stops
+   wrapping to the bottom-left and the QR / name / variant / status sit balanced
+   in the rounded pill again. Layout only; no logic, no markup change.
+--------------------------------------------------------------------------- */
+.linked-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 72px;
+  padding: 0 16px;
+}
+.linked-row > .row-left { flex: 1 1 auto; min-width: 0; }
+.linked-row > .linked-status { flex: 0 0 auto; }
+.linked-row > :last-child { flex: 0 0 auto; }
+
+/* Linked Products colour tint - same per-variant washes as the Purchases rows */
+.linked-row.pr-dark   { background: rgba(120, 78, 50, .13); }
+.linked-row.pr-cherry { background: rgba(190, 55, 70, .12); }
+.linked-row.pr-blue   { background: rgba(48, 95, 175, .12); }
+.linked-row.pr-lemon  { background: rgba(206, 168, 38, .16); }
+
+/* ---------------------------------------------------------------------------
+   Scanner reveal smoothing
+   The native camera sits behind the WebView and shows through the transparent
+   .camera-viewport. Keep that window an opaque neutral surface during start-up
+   and teardown, and only let it go transparent once we are confirmed scanning
+   on the ACTIVE scan screen - so the bare
+   black camera surface is never shown while it has no frames.
+--------------------------------------------------------------------------- */
+.screen[data-screen="scan"] .camera-viewport {
+  background-color: #f1f1f3 !important;
+}
+.screen[data-screen="scan"].active[data-scan-state="scanning"] .camera-viewport {
+  background-color: transparent !important;
+  transition: background-color .32s ease .2s;
+}
+
+/* ---------------------------------------------------------------------------
+   Scanner stop cover (scan-stopping)
+   While the native camera tears down, the mlkit plugin keeps the WebView
+   non-opaque until stopScan() finishes, so a fading leave can composite over the
+   black native layer. During stop we force the phone / stage / camera window to
+   solid white (and restore the phone backdrop) so the area stays opaque the
+   whole time the camera is shutting down - no black. Specificity matches the
+   scan-camera-active rules so it wins while both briefly overlap.
+--------------------------------------------------------------------------- */
+html.scan-stopping .phone,
+html.scan-stopping .stage,
+html.scan-stopping .screen[data-screen="scan"].active .camera-content,
+html.scan-stopping .screen[data-screen="scan"].active .camera-viewport {
+  background: #fff !important;
+}
+html.scan-stopping .phone::before {
+  opacity: 1 !important;
+}
+
+/* ---------------------------------------------------------------------------
+   Scanner stop cover (root + camera window)
+   Extend the stop cover to the page root (html/body) - which scan-camera-active
+   also makes transparent - and to the camera window regardless of .active, so
+   the leave fade can never reveal the black native layer through the root.
+--------------------------------------------------------------------------- */
+html.scan-stopping,
+html.scan-stopping body,
+html.scan-stopping .screen[data-screen="scan"] .camera-content,
+html.scan-stopping .screen[data-screen="scan"] .camera-viewport {
+  background: #fff !important;
+}
+
+/* Scan shutter overlay */
+.scan-shutter{
+  position:absolute;
+  top:0; left:0; width:0; height:0;
+  background:#f1f1f3;
+  z-index:150;
+  opacity:0;
+  pointer-events:none;
+  transition:opacity .18s ease;
+}
+.scan-shutter.is-on{ opacity:1; }
+
+/* Scanner checking + keep camera live under result overlays */
+.screen[data-screen="scan"].active[data-scan-state="processing"] .camera-viewport,
+.screen[data-screen="scan"].active[data-scan-state="product-found"] .camera-viewport,
+.screen[data-screen="scan"].active[data-scan-state="product-found-guest"] .camera-viewport,
+.screen[data-screen="scan"].active[data-scan-state="not-hug-code"] .camera-viewport,
+.screen[data-screen="scan"].active[data-scan-state="already-linked"] .camera-viewport,
+.screen[data-screen="scan"].active[data-scan-state="product-linked"] .camera-viewport,
+.screen[data-screen="scan"].active[data-scan-state="claimed-by-other"] .camera-viewport {
+  background-color: transparent !important;
+  transition: background-color .2s ease;
+}
+
+@keyframes hugTargetLock {
+  0%   { transform: scale(1);   opacity: .85; }
+  45%  { transform: scale(.84); opacity: 1; }
+  100% { transform: scale(1);   opacity: .85; }
+}
+.screen[data-screen="scan"].active[data-scan-state="processing"] .main-scan {
+  animation: hugTargetLock .52s ease-in-out infinite;
+}
+
+/* Activation sheet keyboard lift (single source of truth).
+   The sheet stays a bottom sheet (base rule above: position:absolute; inset:0;
+   align-items:flex-end). resize:"none" stops visualViewport reporting the keyboard,
+   so --kb is set from the native Keyboard height in updateActivationKeyboardInset.
+   padding-bottom lifts the card above the keyboard; the card scrolls if space is tight. */
+.scan-account-sheet {
+  justify-content: center;
+  padding: 18px 18px calc(18px + max(0px, var(--kb, 0px) - (76px + var(--safe-bottom))));
+}
+.scan-account-form {
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.scan-account-form .scan-account-close {
+  z-index: 2;
+}
+.scan-account-email::placeholder {
+  color: #8a8a8a;
+  opacity: 1;
+}
+html.keyboard-open .scan-account-kicker,
+html.keyboard-open .scan-account-copy { display: none; }
+
+/* Referral detail: match the app pill/box recipe + unlink button */
+.linked-referral-card { background: var(--row); border-radius: 22px; }
+.linked-referral-qr { border-radius: 22px; }
+.linked-referral-link {
+  min-height: 54px;
+  padding: 0 18px;
+  border-radius: 999px;
+  border: 1px solid var(--box-stroke);
+  background: var(--row);
+  box-shadow: var(--box-drop-shadow);
+}
+.linked-referral-actions { gap: 10px; }
+.linked-referral-actions button {
+  min-height: 52px;
+  border-radius: 999px;
+  border: 1px solid var(--box-stroke);
+  background: var(--row);
+  box-shadow: var(--box-drop-shadow);
+}
+.linked-referral-actions .linked-referral-copy {
+  background: #050505;
+  color: #fff;
+  border-color: #050505;
+}
+.linked-referral-actions .linked-referral-unlink {
+  background: transparent;
+  border: 1px solid var(--box-stroke);
+  box-shadow: none;
+  color: #a32828;
+}
+
+/* Unlink confirm popup */
+.unlink-confirm {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 26px;
+  background: rgba(0, 0, 0, .28);
+  -webkit-backdrop-filter: blur(7px);
+  backdrop-filter: blur(7px);
+}
+.unlink-confirm.open { display: flex; }
+.unlink-confirm-card {
+  width: 100%;
+  max-width: 320px;
+  padding: 22px 20px;
+  border: 1px solid var(--box-stroke);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, .94);
+  box-shadow: var(--box-drop-shadow);
+  text-align: center;
+}
+.unlink-confirm-title { margin: 0; font-size: 17px; letter-spacing: .02em; color: var(--ink); }
+.unlink-confirm-copy { margin: 10px 0 0; color: var(--muted); font-size: 13px; line-height: 1.42; }
+.unlink-confirm-name { color: var(--ink); font-weight: 650; }
+.unlink-confirm-actions { display: grid; gap: 10px; margin-top: 20px; }
+.unlink-confirm-actions button {
+  min-height: 52px;
+  border-radius: 999px;
+  border: 1px solid var(--box-stroke);
+  background: var(--row);
+  box-shadow: var(--box-drop-shadow);
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: .03em;
+}
+.unlink-confirm-actions .unlink-confirm-cancel { background: #050505; color: #fff; border-color: #050505; }
+.unlink-confirm-actions .unlink-confirm-unlink {
+  background: transparent;
+  border: 1px solid rgba(163, 40, 40, .4);
+  box-shadow: none;
+  color: #a32828;
+}
+
+/* Center the scan prompt text within the scan frame (was pinned to the bottom,
+   leaving the box looking empty on first open). Result/candidate states keep
+   their own visibility:hidden, so only the live prompt states are affected. */
+.screen[data-screen="scan"] .scan-status {
+  top: auto;
+  bottom: 6%;                       /* sit in the lowest part of the scan frame, clear of the graphic */
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
+  width: max-content;               /* hug the text instead of a fixed-width box */
+  max-width: calc(100% - 48px);
+  margin: 0;
+  padding: 9px 18px;                /* first/last letters sit within the pill's rounded ends */
+}
+.screen[data-screen="scan"][data-scan-state="success"] .scan-status {
+  top: auto;
+  bottom: 130px;
+  transform: none;
+}
