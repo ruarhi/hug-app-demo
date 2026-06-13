@@ -1,0 +1,6 @@
+# hug interactive app demo — static site served from the repo root.
+# Lets you connect this repo to Netlify (New site from Git) so it can host the
+# demo instead of GitHub Pages, after which the repo can be made private.
+[build]
+  publish = "."
+  command = ""
