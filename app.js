@@ -4513,6 +4513,13 @@
       }
     }
     plus.addEventListener('click', function(e){ e.stopPropagation(); setExpand(!open); });
+
+    // When expanded, a tap (not a scroll-drag) anywhere on the names list
+    // retracts the leaderboard back to the home view.
+    var tapX = 0, tapY = 0, tapMoved = false;
+    list.addEventListener('pointerdown', function(e){ tapX = e.clientX; tapY = e.clientY; tapMoved = false; }, { passive: true });
+    list.addEventListener('pointermove', function(e){ if(Math.abs(e.clientX - tapX) > 10 || Math.abs(e.clientY - tapY) > 10) tapMoved = true; }, { passive: true });
+    list.addEventListener('pointerup', function(){ if(open && !tapMoved) setExpand(false); }, { passive: true });
   })();
 
   (function impactStepper(){
