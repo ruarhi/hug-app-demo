@@ -4325,6 +4325,20 @@
     ['pointerdown','touchstart','pointermove'].forEach(function(ev){
       ov.addEventListener(ev, function(e){ e.stopPropagation(); });
     });
+    // Tap anywhere on the open receipt to go back a step. A long-press or a
+    // text selection (to copy/paste) is preserved — we don't dismiss then.
+    var ovDown = null;
+    ov.addEventListener('pointerdown', function(e){ ovDown = { x:e.clientX, y:e.clientY, t:Date.now() }; });
+    ov.addEventListener('pointercancel', function(){ ovDown = null; });
+    ov.addEventListener('pointerup', function(e){
+      var d = ovDown; ovDown = null;
+      if(!d || !ov.classList.contains('open')) return;
+      if(e.target.closest && e.target.closest('.txn-back')) return; // its own handler closes it
+      var moved = Math.abs(e.clientX - d.x) > 10 || Math.abs(e.clientY - d.y) > 10;
+      var held  = (Date.now() - d.t) >= 400;
+      var sel   = (window.getSelection && String(window.getSelection())) || '';
+      if(!moved && !held && !sel) ov.classList.remove('open');
+    });
     var rowDown = null;
     list.addEventListener('pointerdown', function(e){
       var row = e.target.closest ? e.target.closest('.history-row') : null;
@@ -4560,7 +4574,8 @@
     var RP = [['#fff','#0a0a0a'], ['#fff','#0a0a0a'], ['#0a0a0a','#fff'], ['#f3f0e7','#0a0a0a'], ['#ffe14d','#0a0a0a'], ['#eb3d7f','#fff']];
     function rpick(a){ return a[(Math.random()*a.length)|0]; }
     function resc(s){ return s.replace(/[&<>"]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); }
-    function ransom(t){ var o=''; for (var i=0;i<t.length;i++){ var ch=t[i]; if (ch==='\n'){ o+='<span style="flex-basis:100%;height:.32em"></span>'; continue; } if (ch===' '){ o+='<span class="ransom-sp"></span>'; continue; } var p=rpick(RP); o+='<span class="ransom-ch" style="font-family:'+rpick(RF)+';background:'+p[0]+';color:'+p[1]+';transform:rotate('+(Math.random()*26-13).toFixed(1)+'deg);font-size:'+(0.85+Math.random()*0.6).toFixed(2)+'em;">'+resc(ch)+'</span>'; } return o; }
+    function rletter(ch){ var p=rpick(RP); return '<span class="ransom-ch" style="font-family:'+rpick(RF)+';background:'+p[0]+';color:'+p[1]+';transform:rotate('+(Math.random()*26-13).toFixed(1)+'deg);font-size:'+(0.85+Math.random()*0.6).toFixed(2)+'em;">'+resc(ch)+'</span>'; }
+    function ransom(t){ var o='', word=''; function flush(){ if(word){ o+='<span class="ransom-word">'+word+'</span>'; word=''; } } for (var i=0;i<t.length;i++){ var ch=t[i]; if (ch==='\n'){ flush(); o+='<span style="flex-basis:100%;height:.32em"></span>'; continue; } if (ch===' '){ flush(); continue; } word+=rletter(ch); } flush(); return o; }
     function render(){ var t = input.value || ' '; msg.className = 'card-msg style-'+style; if (style==='ransom') msg.innerHTML = ransom(t); else msg.textContent = t; }
     try { var saved = JSON.parse(localStorage.getItem(KEY) || 'null'); if (saved) { if (saved.message) input.value = saved.message; style = saved.style || 'plain'; styles.querySelectorAll('button').forEach(function(b){ b.classList.toggle('active', b.dataset.style===style); }); } } catch(e){}
     input.addEventListener('input', render);
