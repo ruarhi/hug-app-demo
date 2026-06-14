@@ -4556,11 +4556,11 @@
     if (!msg || !input || !styles) return;
     var style = 'plain';
     var KEY = 'hug_card';
-    var RF = ["'HugRansom',cursive"];
+    var RF = ["'Anton',sans-serif", "'Abril Fatface',serif", "'Playfair Display',serif", "'Special Elite',cursive", "'Bungee',cursive", "'Oswald',sans-serif", "'Archivo Black',sans-serif", "'Bebas Neue',sans-serif", "Georgia,serif", "'Courier New',monospace"];
     var RP = [['#fff','#0a0a0a'], ['#fff','#0a0a0a'], ['#0a0a0a','#fff'], ['#f3f0e7','#0a0a0a'], ['#ffe14d','#0a0a0a'], ['#eb3d7f','#fff']];
     function rpick(a){ return a[(Math.random()*a.length)|0]; }
     function resc(s){ return s.replace(/[&<>"]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); }
-    function ransom(t){ var o=''; for (var i=0;i<t.length;i++){ var ch=t[i]; if (ch===' '){ o+='<span class="ransom-sp"></span>'; continue; } var p=rpick(RP); o+='<span class="ransom-ch" style="font-family:'+rpick(RF)+';background:'+p[0]+';color:'+p[1]+';transform:rotate('+(Math.random()*26-13).toFixed(1)+'deg);font-size:'+(0.85+Math.random()*0.6).toFixed(2)+'em;">'+resc(ch)+'</span>'; } return o; }
+    function ransom(t){ var o=''; for (var i=0;i<t.length;i++){ var ch=t[i]; if (ch==='\n'){ o+='<span style="flex-basis:100%;height:.32em"></span>'; continue; } if (ch===' '){ o+='<span class="ransom-sp"></span>'; continue; } var p=rpick(RP); o+='<span class="ransom-ch" style="font-family:'+rpick(RF)+';background:'+p[0]+';color:'+p[1]+';transform:rotate('+(Math.random()*26-13).toFixed(1)+'deg);font-size:'+(0.85+Math.random()*0.6).toFixed(2)+'em;">'+resc(ch)+'</span>'; } return o; }
     function render(){ var t = input.value || ' '; msg.className = 'card-msg style-'+style; if (style==='ransom') msg.innerHTML = ransom(t); else msg.textContent = t; }
     try { var saved = JSON.parse(localStorage.getItem(KEY) || 'null'); if (saved) { if (saved.message) input.value = saved.message; style = saved.style || 'plain'; styles.querySelectorAll('button').forEach(function(b){ b.classList.toggle('active', b.dataset.style===style); }); } } catch(e){}
     input.addEventListener('input', render);
