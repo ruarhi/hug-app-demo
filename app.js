@@ -4547,6 +4547,28 @@
   })();
 
 
+  // (19) card designer — live message + font-style picker (plain / handwritten / retro / ransom).
+  (function cardDesigner(){
+    var msg = document.getElementById('card-msg');
+    var input = document.getElementById('card-input');
+    var styles = document.getElementById('card-styles');
+    var save = document.getElementById('card-save');
+    if (!msg || !input || !styles) return;
+    var style = 'plain';
+    var KEY = 'hug_card';
+    var RF = ['"Press Start 2P",monospace', '"Caveat",cursive', 'Georgia,serif', '"Avenir Next",sans-serif', '"Courier New",monospace'];
+    var RP = [['#fff','#050505'], ['#050505','#fff'], ['#ffe14d','#050505'], ['#eb3d7f','#fff'], ['#8e35d7','#fff'], ['#f4f4f5','#050505']];
+    function rpick(a){ return a[(Math.random()*a.length)|0]; }
+    function resc(s){ return s.replace(/[&<>"]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); }
+    function ransom(t){ var o=''; for (var i=0;i<t.length;i++){ var ch=t[i]; if (ch===' '){ o+='<span class="ransom-sp"></span>'; continue; } var p=rpick(RP); o+='<span class="ransom-ch" style="font-family:'+rpick(RF)+';background:'+p[0]+';color:'+p[1]+';transform:rotate('+(Math.random()*16-8).toFixed(1)+'deg);font-size:'+(0.9+Math.random()*0.5).toFixed(2)+'em;">'+resc(ch)+'</span>'; } return o; }
+    function render(){ var t = input.value || ' '; msg.className = 'card-msg style-'+style; if (style==='ransom') msg.innerHTML = ransom(t); else msg.textContent = t; }
+    try { var saved = JSON.parse(localStorage.getItem(KEY) || 'null'); if (saved) { if (saved.message) input.value = saved.message; style = saved.style || 'plain'; styles.querySelectorAll('button').forEach(function(b){ b.classList.toggle('active', b.dataset.style===style); }); } } catch(e){}
+    input.addEventListener('input', render);
+    styles.querySelectorAll('button').forEach(function(b){ b.addEventListener('click', function(){ style = b.dataset.style; styles.querySelectorAll('button').forEach(function(x){ x.classList.toggle('active', x===b); }); render(); }); });
+    if (save) save.addEventListener('click', function(){ try { localStorage.setItem(KEY, JSON.stringify({ message: input.value.trim(), style: style })); } catch(e){} save.textContent = 'Saved ✓'; setTimeout(function(){ save.textContent = 'Save card'; }, 1400); });
+    render();
+  })();
+
   // (18) gift-wrap fee (hoisted so updateCart can read it); maintained by giftWrapFeature
   function giftWrapFee(){ return (window.__giftWrapFee || 0); }
 

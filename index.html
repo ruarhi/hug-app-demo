@@ -11,6 +11,7 @@
   <link rel="apple-touch-icon" href="assets/touch-icon.png">
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="demo.css">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&family=Press+Start+2P&display=swap">
 </head>
 <body>
   <svg width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">
@@ -398,6 +399,7 @@
           <button class="simple-row" id="settings-impact" data-go="impact"><span class="row-left"><img class="row-icon" src="assets/icon-tree.svg" alt="">impact</span><span>›</span></button>
           <button class="simple-row" id="settings-purchases" data-go="purchases"><span class="row-left"><img class="row-icon" src="assets/icon-bag.svg" alt="">purchase history</span><span>›</span></button>
           <button class="simple-row" id="settings-linked" data-go="linked"><span class="row-left"><img class="row-icon" src="assets/icon-qr.svg" alt="">linked products</span><span>›</span></button>
+          <button class="simple-row" id="settings-card" data-go="card"><span class="row-left"><img class="row-icon" src="assets/icon-email.svg" alt="">message card</span><span>›</span></button>
         </div>
         <nav class="bottom-nav" aria-label="Navigation">
           <button class="active" data-go="settings" aria-label="Settings"><img class="nav-icon" src="assets/icon-settings.svg" alt=""></button>
@@ -533,6 +535,34 @@
               <div class="address-row"><span class="addr-k">postcode</span><input class="addr-v" type="text" name="postal-code" autocomplete="postal-code" autocapitalize="characters" spellcheck="false" value="BS1 4HT" readonly aria-label="Postcode"></div>
             </form>
           </div>
+        </div>
+        <nav class="bottom-nav" aria-label="Navigation">
+          <button data-go="settings" aria-label="Settings"><img class="nav-icon" src="assets/icon-settings.svg" alt=""></button>
+          <button data-go="qr" aria-label="QR code"><img class="nav-icon qr-icon" src="assets/icon-qr.svg" alt=""></button>
+          <button data-go="scan" aria-label="Scan"><img class="nav-icon" src="assets/icon-scan.svg" alt=""></button>
+        </nav>
+      </section>
+
+      <section class="screen" data-screen="card">
+        <header class="top">
+          <button class="balance" data-go="account" aria-label="Referral balance">£0.00</button>
+          <button class="logo" data-go="home" aria-label="Home"><img src="assets/logo.svg" alt="hug"></button>
+          <button class="bag-button" data-go="bag" aria-label="Bag"><img class="bag-icon" src="assets/icon-bag.svg" alt=""><span class="bag-count"></span></button>
+        </header>
+        <div class="content plain-content card-content">
+          <h2 class="plain-title">YOUR CARD</h2>
+          <div class="card-preview">
+            <p class="card-msg style-plain" id="card-msg">Enjoy your hug.</p>
+            <span class="card-sign">— with <b>hug</b></span>
+          </div>
+          <textarea class="card-input" id="card-input" rows="2" maxlength="60" placeholder="Your message" aria-label="Card message">Enjoy your hug.</textarea>
+          <div class="card-styles" id="card-styles">
+            <button type="button" data-style="plain" class="active">Plain</button>
+            <button type="button" data-style="hand">Handwritten</button>
+            <button type="button" data-style="arcade">Retro</button>
+            <button type="button" data-style="ransom">Ransom</button>
+          </div>
+          <button class="card-save" id="card-save" type="button">Save card</button>
         </div>
         <nav class="bottom-nav" aria-label="Navigation">
           <button data-go="settings" aria-label="Settings"><img class="nav-icon" src="assets/icon-settings.svg" alt=""></button>
