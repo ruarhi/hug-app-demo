@@ -4556,7 +4556,7 @@
     if (!msg || !input || !styles) return;
     var style = 'plain';
     var KEY = 'hug_card';
-    var RF = ["'UnifrakturCook',cursive", "'Playfair Display',serif", "'Abril Fatface',serif", "'Anton',sans-serif", "'Rye',cursive", "'Special Elite',cursive", "'Caveat',cursive", "'Bungee',cursive", "Georgia,serif", "'Courier New',monospace"];
+    var RF = ["'HugRansom',cursive"];
     var RP = [['#fff','#0a0a0a'], ['#fff','#0a0a0a'], ['#0a0a0a','#fff'], ['#f3f0e7','#0a0a0a'], ['#ffe14d','#0a0a0a'], ['#eb3d7f','#fff']];
     function rpick(a){ return a[(Math.random()*a.length)|0]; }
     function resc(s){ return s.replace(/[&<>"]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); }
