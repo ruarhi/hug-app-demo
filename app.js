@@ -4556,11 +4556,11 @@
     if (!msg || !input || !styles) return;
     var style = 'plain';
     var KEY = 'hug_card';
-    var RF = ['"Press Start 2P",monospace', '"Caveat",cursive', 'Georgia,serif', '"Avenir Next",sans-serif', '"Courier New",monospace'];
-    var RP = [['#fff','#050505'], ['#050505','#fff'], ['#ffe14d','#050505'], ['#eb3d7f','#fff'], ['#8e35d7','#fff'], ['#f4f4f5','#050505']];
+    var RF = ["'UnifrakturCook',cursive", "'Playfair Display',serif", "'Abril Fatface',serif", "'Anton',sans-serif", "'Rye',cursive", "'Special Elite',cursive", "'Caveat',cursive", "'Bungee',cursive", "Georgia,serif", "'Courier New',monospace"];
+    var RP = [['#fff','#0a0a0a'], ['#fff','#0a0a0a'], ['#0a0a0a','#fff'], ['#f3f0e7','#0a0a0a'], ['#ffe14d','#0a0a0a'], ['#eb3d7f','#fff']];
     function rpick(a){ return a[(Math.random()*a.length)|0]; }
     function resc(s){ return s.replace(/[&<>"]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); }
-    function ransom(t){ var o=''; for (var i=0;i<t.length;i++){ var ch=t[i]; if (ch===' '){ o+='<span class="ransom-sp"></span>'; continue; } var p=rpick(RP); o+='<span class="ransom-ch" style="font-family:'+rpick(RF)+';background:'+p[0]+';color:'+p[1]+';transform:rotate('+(Math.random()*16-8).toFixed(1)+'deg);font-size:'+(0.9+Math.random()*0.5).toFixed(2)+'em;">'+resc(ch)+'</span>'; } return o; }
+    function ransom(t){ var o=''; for (var i=0;i<t.length;i++){ var ch=t[i]; if (ch===' '){ o+='<span class="ransom-sp"></span>'; continue; } var p=rpick(RP); o+='<span class="ransom-ch" style="font-family:'+rpick(RF)+';background:'+p[0]+';color:'+p[1]+';transform:rotate('+(Math.random()*26-13).toFixed(1)+'deg);font-size:'+(0.85+Math.random()*0.6).toFixed(2)+'em;">'+resc(ch)+'</span>'; } return o; }
     function render(){ var t = input.value || ' '; msg.className = 'card-msg style-'+style; if (style==='ransom') msg.innerHTML = ransom(t); else msg.textContent = t; }
     try { var saved = JSON.parse(localStorage.getItem(KEY) || 'null'); if (saved) { if (saved.message) input.value = saved.message; style = saved.style || 'plain'; styles.querySelectorAll('button').forEach(function(b){ b.classList.toggle('active', b.dataset.style===style); }); } } catch(e){}
     input.addEventListener('input', render);
