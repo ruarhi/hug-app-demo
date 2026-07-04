@@ -85,6 +85,41 @@
         <path d="M32 8v48"/>
         <path d="M43 17c-3-3-7-5-11-5-7 0-12 4-12 9 0 6 4 8 12 10 7 2 12 4 12 10 0 6-5 10-12 10-5 0-9-2-12-5"/>
       </symbol>
+
+      <symbol id="i-key" viewBox="0 0 64 64">
+        <circle cx="20" cy="32" r="11"/>
+        <path d="M31 32h25"/>
+        <path d="M45 32v9"/>
+        <path d="M53 32v11"/>
+      </symbol>
+
+      <symbol id="i-signout" viewBox="0 0 64 64">
+        <path d="M34 14H16a4 4 0 0 0-4 4v28a4 4 0 0 0 4 4h18"/>
+        <path d="M30 32h22"/>
+        <path d="M44 23l9 9-9 9"/>
+      </symbol>
+
+      <symbol id="i-trash" viewBox="0 0 64 64">
+        <path d="M14 20h36"/>
+        <path d="M25 20v-5a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v5"/>
+        <path d="M19 20l2.4 30A4 4 0 0 0 25.4 54h13.2a4 4 0 0 0 4-3.9L45 20"/>
+        <path d="M27 29v16"/>
+        <path d="M37 29v16"/>
+      </symbol>
+
+      <!-- Brand gradient (pink -> purple), matched to .gradient-accent. Used to
+           stroke the cash-out download arrow so it reads as on-brand. -->
+      <linearGradient id="hug-grad" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#eb3d7f"/>
+        <stop offset="1" stop-color="#8e35d7"/>
+      </linearGradient>
+
+      <!-- Download arrow: signals the deposited card has a cash-out action. -->
+      <symbol id="i-cashout" viewBox="0 0 64 64">
+        <path d="M32 12v26"/>
+        <path d="M21 29l11 11 11-11"/>
+        <path d="M15 49h34"/>
+      </symbol>
     </defs>
   </svg>
   <svg id="icon-library-inline" aria-hidden="true" focusable="false" style="position:absolute;left:-9999px;top:-9999px;width:1px;height:1px;overflow:hidden;pointer-events:none;opacity:0;">
@@ -287,8 +322,8 @@
             </div>
           </section>
 
-          <section class="points-block" aria-label="Points">
-            <h1 class="eyebrow">POINTS</h1>
+          <section class="points-block" aria-label="Eco points">
+            <h1 class="eyebrow">ECO POINTS</h1>
             <div class="points">375</div>
           </section>
 
@@ -472,24 +507,22 @@
         </header>
         <div class="content plain-content checkout-content">
           <h2 class="plain-title">CHECKOUT</h2>
-          <p class="checkout-note">confirm details and payment</p>
-          <label class="simple-row checkout-entry-row"><span>name</span><input class="checkout-field checkout-entry-field" type="text" name="name" inputmode="text" autocomplete="name" value="Alex Rivera" readonly placeholder="" data-placeholder="" aria-label="Name"></label>
-          <label class="simple-row checkout-entry-row"><span>address</span><input class="checkout-field checkout-entry-field" type="text" name="street-address" inputmode="text" autocomplete="street-address" value="27 Granby Street" readonly placeholder="" data-placeholder="" aria-label="Address"></label>
-          <label class="simple-row checkout-entry-row"><span>city</span><input class="checkout-field checkout-entry-field" type="text" name="city" inputmode="text" autocomplete="address-level2" value="Bristol" readonly placeholder="" data-placeholder="" aria-label="City"></label>
-          <label class="simple-row checkout-entry-row"><span>postcode</span><input class="checkout-field checkout-entry-field" type="text" name="postal-code" inputmode="text" autocomplete="postal-code" value="BS1 4HT" readonly placeholder="" data-placeholder="" aria-label="Postcode"></label>
-          <div class="simple-row"><span>payment</span><input class="checkout-field checkout-payment-field" type="text" name="cc-number" inputmode="numeric" autocomplete="cc-number" value="4242 4242 4242 4242" readonly placeholder="4242 4242 4242 4242" data-placeholder="4242 4242 4242 4242" aria-label="Payment"></div>
-          <div class="simple-row gift-row" id="gift-row"><span class="row-left"><span class="gift-check"><input type="checkbox" id="gift-wrap-toggle" aria-label="Gift wrap"><span class="gift-tick"></span></span><span class="gift-label-text">gift wrap</span></span><span class="gift-fee" id="gift-fee">+£3.00</span></div>
+          <p class="checkout-note">review your bag — secure payment on the next step</p>
+          <!-- Delivery address: auto-filled from the profile, editable here. Passed to
+               Shopify so the hosted checkout is prefilled. Payment is collected on
+               Shopify's secure checkout (PCI) — never in the app. -->
+          <label class="simple-row checkout-entry-row"><span>name</span><input class="checkout-field checkout-entry-field" type="text" name="name" inputmode="text" autocomplete="name" placeholder="" data-placeholder="" aria-label="Name"></label>
+          <label class="simple-row checkout-entry-row"><span>address</span><input class="checkout-field checkout-entry-field" type="text" name="street-address" inputmode="text" autocomplete="street-address" placeholder="" data-placeholder="" aria-label="Address"></label>
+          <label class="simple-row checkout-entry-row"><span>city</span><input class="checkout-field checkout-entry-field" type="text" name="city" inputmode="text" autocomplete="address-level2" placeholder="" data-placeholder="" aria-label="City"></label>
+          <label class="simple-row checkout-entry-row"><span>postcode</span><input class="checkout-field checkout-entry-field" type="text" name="postal-code" inputmode="text" autocomplete="postal-code" placeholder="" data-placeholder="" aria-label="Postcode"></label>
+          <div class="simple-row gift-row" id="giftcard-row"><span class="row-left"><span class="gift-check"><input type="checkbox" id="gift-card-toggle" aria-label="Gift card"><span class="gift-tick"></span></span><span class="gift-label-text">gift card</span></span><span class="gift-fee" id="giftcard-fee">+£4</span></div>
+          <div class="simple-row gift-row" id="giftwrap-row"><span class="row-left"><span class="gift-check"><input type="checkbox" id="gift-wrap-toggle" aria-label="Gift wrap"><span class="gift-tick"></span></span><span class="gift-label-text">gift wrap</span></span><span class="gift-fee" id="giftwrap-fee">+£5</span></div>
           <p class="checkout-items-label">your bag</p>
           <div class="checkout-items" id="checkout-items"></div>
+          <div class="simple-row discount-row"><input class="discount-field" type="text" inputmode="text" autocapitalize="characters" placeholder="referral code (optional)" aria-label="Referral code"><button class="discount-apply" type="button" aria-label="Apply referral code">apply</button></div>
+          <div class="checkout-discount" id="checkout-discount" hidden><span>referral discount (10% off)</span><span id="checkout-discount-value">−£0.00</span></div>
           <div class="checkout-total"><span>total</span><span id="checkout-total-value">£0.00</span></div>
-          <button class="pay-button">place order</button>
-          <div class="simple-row discount-row"><input class="discount-field" type="text" inputmode="text" placeholder="discount/referral code" aria-label="Discount/referral code"><button class="discount-apply" type="button" aria-label="Apply discount/referral code">apply</button></div>
-          <div class="express-pay" aria-label="Express checkout">
-            <span class="express-pay-divider">or check out with</span>
-            <button class="express-btn express-apple" type="button" aria-label="Pay with Apple Pay">Apple Pay</button>
-            <button class="express-btn express-google" type="button" aria-label="Pay with Google Pay">Google Pay</button>
-            <button class="express-btn express-amazon" type="button" aria-label="Pay with Amazon Pay">amazon pay</button>
-          </div>
+          <button class="pay-button">checkout</button>
         </div>
         <nav class="bottom-nav" aria-label="Navigation">
           <button data-go="settings" aria-label="Settings"><img class="nav-icon" src="assets/icon-settings.svg" alt=""></button>
@@ -507,8 +540,8 @@
         <div class="content plain-content">
           <h2 class="plain-title">PROFILE</h2>
           <img class="profile-icon" src="assets/icon-profile-avatar.svg" alt="">
-          <div class="profile-name">Alex Rivera</div>
-          <div class="simple-row"><span class="row-left"><img class="row-icon" src="assets/icon-email.svg" alt="">email</span><span class="email-value">guest</span></div>
+          <div class="profile-name">alex</div>
+          <div class="simple-row email-row"><span class="row-left"><img class="row-icon" src="assets/icon-email.svg" alt=""><span class="row-label">email</span></span><span class="email-value" aria-label="Account email">guest</span></div>
           <div class="share-box">
             <div class="share-title share-active-only">referral</div>
             <div class="share-line share-active-only">
@@ -519,19 +552,27 @@
               <span class="share-qr"><img src="assets/icon-qr.svg" alt="QR code"></span>
               <button class="copy-btn" type="button" data-copy="" aria-label="Copy referral link">copy</button>
             </div>
+            <button class="share-send share-active-only" type="button" id="referral-share" aria-label="Share referral link">
+              <svg class="share-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V3"/><path d="M8 7l4-4 4 4"/><path d="M5 12v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/></svg>
+              <span>share link</span>
+            </button>
             <div class="share-inactive">
               <span class="share-inactive-label">Not activated</span>
               <button class="share-activate" type="button" data-go="scan">activate now</button>
+            </div>
+            <div class="share-locked">
+              <span class="share-inactive-label">Link a product to unlock referrals</span>
+              <button class="share-activate" type="button" data-go="scan">link a product</button>
             </div>
           </div>
           <div class="info-box">
             <div class="share-title">address</div>
             <button class="info-edit" type="button" aria-label="Edit address">edit</button>
             <form class="addr-form" autocomplete="on" novalidate>
-              <div class="address-row"><span class="addr-k">name</span><input class="addr-v" type="text" name="name" autocomplete="name" autocapitalize="words" spellcheck="false" value="Alex Rivera" readonly aria-label="Name"></div>
-              <div class="address-row"><span class="addr-k">street</span><input class="addr-v" type="text" name="street-address" autocomplete="street-address" autocapitalize="words" spellcheck="false" value="27 Granby Street" readonly aria-label="Street"></div>
-              <div class="address-row"><span class="addr-k">city</span><input class="addr-v" type="text" name="city" autocomplete="address-level2" autocapitalize="words" spellcheck="false" value="Bristol" readonly aria-label="City"></div>
-              <div class="address-row"><span class="addr-k">postcode</span><input class="addr-v" type="text" name="postal-code" autocomplete="postal-code" autocapitalize="characters" spellcheck="false" value="BS1 4HT" readonly aria-label="Postcode"></div>
+              <div class="address-row"><span class="addr-k">name</span><input class="addr-v" type="text" name="name" autocomplete="name" autocapitalize="words" spellcheck="false" readonly aria-label="Name"></div>
+              <div class="address-row"><span class="addr-k">street</span><input class="addr-v" type="text" name="street-address" autocomplete="street-address" autocapitalize="words" spellcheck="false" readonly aria-label="Street"></div>
+              <div class="address-row"><span class="addr-k">city</span><input class="addr-v" type="text" name="city" autocomplete="address-level2" autocapitalize="words" spellcheck="false" readonly aria-label="City"></div>
+              <div class="address-row"><span class="addr-k">postcode</span><input class="addr-v" type="text" name="postal-code" autocomplete="postal-code" autocapitalize="characters" spellcheck="false" readonly aria-label="Postcode"></div>
             </form>
           </div>
         </div>
@@ -549,19 +590,49 @@
           <button class="bag-button" data-go="bag" aria-label="Bag"><img class="bag-icon" src="assets/icon-bag.svg" alt=""><span class="bag-count"></span></button>
         </header>
         <div class="content plain-content card-content">
-          <h2 class="plain-title">YOUR CARD</h2>
-          <div class="card-preview">
-            <p class="card-msg style-plain" id="card-msg">Enjoy your hug.</p>
-            <span class="card-sign">— with <b>hug</b></span>
+          <h2 class="plain-title">GIFT CARD</h2>
+          <p class="ce-hint">Type on the card. Tap the text, a photo or a sticker to select it — drag to move, slider to size.</p>
+          <div class="ce-stage">
+            <div class="ce-side">
+              <button class="ce-photo-btn" id="ce-photo-btn" type="button" aria-label="Add a photo">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.5"/><path d="M21 16l-5-5L5 19"/></svg>
+                <span>add<br>photo</span>
+              </button>
+              <input type="file" id="ce-photo-input" accept="image/*" hidden>
+            </div>
+            <div class="ce-card-wrap">
+              <div class="ce-card" id="ce-card"><div class="ce-msg card-msg style-plain ce-empty" id="ce-msg" role="textbox" aria-label="Card message" data-placeholder="your message"></div></div>
+              <p class="ce-card-size" id="ce-card-size">inside · 4 × 6 in</p>
+            </div>
+            <div class="ce-side"><div class="ce-sticker-scroll" id="ce-stickers"></div></div>
           </div>
-          <textarea class="card-input" id="card-input" rows="2" maxlength="60" placeholder="Your message" aria-label="Card message">Enjoy your hug.</textarea>
-          <div class="card-styles" id="card-styles">
+
+          <div class="ce-layerctl" id="ce-layerctl" hidden>
+            <div class="ce-ctl-row"><span>size</span><input type="range" id="ce-size" min="50" max="170" value="100" aria-label="Selected item size"></div>
+            <div class="ce-ctl-row" id="ce-widthrow"><span>width</span><input type="range" id="ce-width" min="30" max="96" value="84" aria-label="Text box width"></div>
+            <div class="ce-ctl-row" id="ce-heightrow"><span>height</span><input type="range" id="ce-height" min="18" max="94" value="86" aria-label="Text box height"></div>
+            <div class="ce-ctl-row" id="ce-rotrow"><span>rotate</span><input type="range" id="ce-rot" min="-25" max="25" value="0" aria-label="Selected item rotation"></div>
+            <button class="ce-remove" id="ce-remove" type="button">remove</button>
+          </div>
+
+          <p class="gift-section-label ce-label">font</p>
+          <div class="card-styles ce-fonts" id="ce-fonts">
             <button type="button" data-style="plain" class="active">Plain</button>
             <button type="button" data-style="hand">Handwritten</button>
             <button type="button" data-style="arcade">Retro</button>
             <button type="button" data-style="ransom">Ransom</button>
           </div>
-          <button class="card-save" id="card-save" type="button">Save card</button>
+
+          <p class="gift-section-label ce-label">card design</p>
+          <div class="ce-designs gift-cards" id="ce-designs">
+            <button type="button" class="gift-card-opt gift-card-opt-0 sel" data-design="0" aria-label="Linen"></button>
+            <button type="button" class="gift-card-opt gift-card-opt-1" data-design="1" aria-label="Bloom"></button>
+            <button type="button" class="gift-card-opt gift-card-opt-2" data-design="2" aria-label="Sage"></button>
+            <button type="button" class="gift-card-opt gift-card-opt-3" data-design="3" aria-label="Confetti"></button>
+          </div>
+
+          <p class="ce-price-note">Gift card <b>+£4</b> · added to your bag at checkout</p>
+          <button class="card-save ce-done" id="ce-done" type="button">done</button>
         </div>
         <nav class="bottom-nav" aria-label="Navigation">
           <button data-go="settings" aria-label="Settings"><img class="nav-icon" src="assets/icon-settings.svg" alt=""></button>
@@ -579,6 +650,8 @@
         <div class="content plain-content impact-content">
           <h2 class="plain-title">IMPACT</h2>
           <p class="impact-note">your impact so far</p>
+          <div class="impact-eco"><span class="impact-eco-val" id="imp-eco">0</span><span class="impact-eco-lbl">eco points</span></div>
+          <p class="impact-eco-note">25 per linked mug · 5 per referral</p>
           <div class="impact-cards">
             <div class="impact-card"><div class="impact-card-val">1250</div><div class="impact-card-lbl">bottles</div></div>
             <div class="impact-card"><div class="impact-card-val">4.5t</div><div class="impact-card-lbl">CO₂e</div></div>
@@ -613,40 +686,7 @@
         </header>
         <div class="content plain-content purchases-content">
           <h2 class="plain-title">PURCHASES</h2>
-          <div class="purchase-list">
-            <div class="purchase-item">
-              <button class="simple-row purchase-row pr-dark" type="button"><span class="row-left">hug o — dark roast</span><span class="purchase-plus">+</span></button>
-              <div class="purchase-detail">
-                <div class="purchase-kv"><span>paid</span><span>mar 14 2026 · £30.00</span></div>
-                <div class="purchase-kv"><span>card</span><span>visa ·· 4242</span></div>
-                <div class="purchase-kv"><span>shipped to</span><span>12 maple street, bristol</span></div>
-              </div>
-            </div>
-            <div class="purchase-item">
-              <button class="simple-row purchase-row pr-cherry" type="button"><span class="row-left">hug o — cherry pop</span><span class="purchase-plus">+</span></button>
-              <div class="purchase-detail">
-                <div class="purchase-kv"><span>paid</span><span>feb 02 2026 · £30.00</span></div>
-                <div class="purchase-kv"><span>card</span><span>visa ·· 4242</span></div>
-                <div class="purchase-kv"><span>shipped to</span><span>12 maple street, bristol</span></div>
-              </div>
-            </div>
-            <div class="purchase-item">
-              <button class="simple-row purchase-row pr-blue" type="button"><span class="row-left">hug o — blue crush</span><span class="purchase-plus">+</span></button>
-              <div class="purchase-detail">
-                <div class="purchase-kv"><span>paid</span><span>jan 19 2026 · £30.00</span></div>
-                <div class="purchase-kv"><span>card</span><span>visa ·· 4242</span></div>
-                <div class="purchase-kv"><span>shipped to</span><span>12 maple street, bristol</span></div>
-              </div>
-            </div>
-            <div class="purchase-item">
-              <button class="simple-row purchase-row pr-lemon" type="button"><span class="row-left">hug o — lemon drop</span><span class="purchase-plus">+</span></button>
-              <div class="purchase-detail">
-                <div class="purchase-kv"><span>paid</span><span>dec 08 2025 · £30.00</span></div>
-                <div class="purchase-kv"><span>card</span><span>visa ·· 4242</span></div>
-                <div class="purchase-kv"><span>shipped to</span><span>12 maple street, bristol</span></div>
-              </div>
-            </div>
-          </div>
+          <div class="purchase-list"><p class="purchases-empty">No purchases yet.</p></div>
         </div>
         <nav class="bottom-nav" aria-label="Navigation">
           <button data-go="settings" aria-label="Settings"><img class="nav-icon" src="assets/icon-settings.svg" alt=""></button>
@@ -717,17 +757,18 @@
               <span class="money-card-label">Referrals</span>
               <span class="money-card-value">3</span>
             </div>
-            <div class="simple-row compact">
-              <span class="money-card-label">Orders</span>
-              <span class="money-card-value">2</span>
-            </div>
             <div class="simple-row wide pending">
               <span class="money-card-label">Cashback pending</span>
               <span class="money-card-value gradient-accent small">£24.00</span>
             </div>
             <div class="simple-row wide approved">
               <span class="money-card-label">Cashback deposited</span>
+              <svg class="cashout-arrow" aria-hidden="true"><use href="#i-cashout"></use></svg>
               <span class="money-card-value gradient-accent small">£36.00</span>
+            </div>
+            <div class="simple-row wide cashed-out">
+              <span class="money-card-label">Cashed out</span>
+              <span class="money-card-value cashed-accent small">£0.00</span>
             </div>
           </section>
           <section class="history-wrap" aria-label="History">
@@ -758,8 +799,8 @@
       <div class="giftwrap-panel" id="giftwrap-panel" aria-hidden="true">
         <div class="giftwrap-inner">
           <button class="giftwrap-back" id="giftwrap-back" type="button" aria-label="Back to checkout">‹ back</button>
-          <h2 class="plain-title">GIFT WRAP</h2>
-          <p class="gift-intro">wrap items individually — each can have its own paper, card and message</p>
+          <h2 class="plain-title" id="giftwrap-title">GIFT WRAP</h2>
+          <p class="gift-intro" id="gift-intro">wrap items individually — pick a paper for each</p>
           <div class="gift-units" id="gift-units"></div>
           <button class="gift-done" id="gift-done" type="button">done</button>
         </div>
@@ -768,10 +809,9 @@
       <button class="global-logo" data-go-home aria-label="Home"><img src="assets/logo.svg" alt="hug"></button>
     </div>
   </main>
-
   <!-- demo-bridge.js replaces native-bridge.js for the marketing-site embed:
        a dummy backend + seeded dummy account so this app runs interactively
-       with no Supabase/auth/camera. Loaded first so the app sees the seeded
+       with no Supabase / auth / camera. Loaded first so the app sees the seeded
        account and window.HugBackend on boot. -->
   <script src="demo-bridge.js"></script>
   <script src="app.js"></script>

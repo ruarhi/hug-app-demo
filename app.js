@@ -25,6 +25,10 @@
     const bagCounts = [...document.querySelectorAll(".bag-count")];
     const qtyNumber = document.getElementById("qty-number");
     const checkoutTotalValue = document.getElementById("checkout-total-value");
+    const checkoutDiscountRow = document.getElementById("checkout-discount");
+    const checkoutDiscountValue = document.getElementById("checkout-discount-value");
+    let referralApplied = false;   // referral code applied -> preview the 10% off in the total
+    const REFERRAL_DISCOUNT_RATE = 0.10;
     const scanScreen = document.querySelector('.screen[data-screen="scan"]');
     const scanStatus = scanScreen?.querySelector(".scan-status");
     const scanRestart = scanScreen?.querySelector(".scan-restart");
@@ -87,6 +91,29 @@
     const HUG_ACCOUNT_EMAIL_KEY = "hug-account-email-v1";
     const HUG_REFERRAL_CODE_KEY = "hug-referral-code-v1";
 
+    // Stay signed in across launches (the device lock is the auth) — the session
+    // persists in Capacitor Preferences and is restored on boot; the user only
+    // leaves via an explicit sign-out. Flip to TRUE only to force a signed-out
+    // boot for testing the sign-in / Face ID flow (chips + Keychain logins
+    // survive). When TRUE, the boot session-restore (syncAccountFromBackend)
+    // awaits `hugLoginReset` below so it can't race getSession() and re-sign-in.
+    const HUG_ALWAYS_SIGNED_OUT_ON_BOOT = false;
+    let hugLoginReset = Promise.resolve();
+    window.addEventListener("load", function () {
+      if (!HUG_ALWAYS_SIGNED_OUT_ON_BOOT) return;
+      try {
+        [HUG_ACCOUNT_STATE_KEY, HUG_ACCOUNT_EMAIL_KEY, HUG_REFERRAL_CODE_KEY, HUG_LINKED_PRODUCTS_KEY, "hug-demo-mode"]
+          .forEach(function (k) { try { localStorage.removeItem(k); } catch (e) {} });
+        // Wipe the displayed legacy linked products + purchases immediately (don't
+        // wait for the async signOut), so a fresh boot never flashes stale data.
+        try { clearHugLinkedProducts(); } catch (e) {}
+        try { if (window.__hugPurchases) window.__hugPurchases.clear(); } catch (e) {}
+        hugLoginReset = Promise.resolve(window.HugBackend && window.HugBackend.signOut && window.HugBackend.signOut())
+          .catch(function () {})
+          .then(function () { if (window.clearHugAccountState) window.clearHugAccountState(); });
+      } catch (e) {}
+    });
+
     // Developer-only reset (not wired into any UI / production flow): clears only
     // this app's own localStorage keys and reloads, returning the app to guest
     // mode for testing. Uses the key constants above so nothing is hardcoded.
@@ -119,12 +146,43 @@
     let referralCode = "";
     let referralAvailableCents = 0;
     let referralPendingCents = 0;
+    let referralCashedOutCents = 0;
+    let referralRewardCount = 0;
+
+    // ---- Prototype/demo mode -------------------------------------------------
+    // A Settings toggle flips between a totally FRESH account experience (empty,
+    // real) and a fully-populated PROTOTYPE. localStorage overrides the build
+    // default (window.__HUG_DEMO__ from hug-flags.js). Demo data is display-only:
+    // it never persists account state or calls the backend.
+    function isDemoMode() {
+      // Prototype/demo mode retired — the app always runs against real accounts.
+      return false;
+    }
+    window.__hugIsDemo = isDemoMode;
+    document.documentElement.dataset.demo = isDemoMode() ? "on" : "off";
+    const DEMO = {
+      mugs: 6,                 // -> 240 bottles / 24 kg / 6 trees
+      points: 204,   // == demo referral/order count; home POINTS == leaderboard "you" (DEMO_ROWS reads this)
+      availableCents: 4250,    // fallback only — demo balance is derived from the history txns
+      pendingCents: 1200,
+      cashedOutCents: 90000,
+      referralCode: "HUGDEMO",
+      name: "ruary",
+      email: "ruary@thehuggable.co",
+      bankLast4: "4471",
+      address: { "name": "Ruary Hewson", "street-address": "14 Maple Street", "city": "Bristol", "postal-code": "BS1 4ND" },
+      linkedCodes: ["HUG-DR-001", "HUG-CP-001", "HUG-BC-001"]
+    };
     let selectedLinkedProduct = null;
     let referralCopyTimer = null;
 
-    // Local prototype referral link only. Real attribution/user identity belongs in backend/auth work.
+    // Linked-product share link — query-mode launch link tied to the user's own
+    // referral code (the referral system attributes on ?ref=). Matches referralUrl()'s
+    // host + shape; productCode retained for a future per-product deep-link.
+    // Launch uses ?ref= only — no /r/ shortlink (not a real HTTP redirect yet).
     function buildLocalReferralUrl(productCode) {
-      return `https://www.thehuggable.co/r/LOCAL-USER/${encodeURIComponent(productCode)}`;
+      void productCode;
+      return referralUrl(loadReferralCode());
     }
 
     // The user's personal referral code (one per account, minted server-side).
@@ -152,25 +210,116 @@
     // Render the real code into the profile share-box: the visible value and the
     // data-copy on both copy buttons (code + link). The generic copy handler
     // reads data-copy at click time, so updating the attribute is enough.
+    // The canonical referral URL the master QR + copy-link encode: straight to the
+    // Shopify product picker with the code, so it lands on "choose your hug",
+    // applies the friend's 10% on add-to-cart, and credits this user.
+    // (Swap the host to a branded thehuggable.co domain once it's on Shopify.)
+    function referralUrl(code) {
+      return `https://zyeeke-kx.myshopify.com/products/hug-o?ref=${encodeURIComponent(code)}`;
+    }
+
     function renderReferralCode() {
       const shareValue = document.querySelector(".share-box .share-value");
       const codeBtn = document.querySelector('.share-box .copy-btn[aria-label="Copy referral code"]');
       const linkBtn = document.querySelector('.share-box .copy-btn[aria-label="Copy referral link"]');
-      const code = accountStatus === "active" ? referralCode : "";
+      const qrSlot = document.querySelector(".share-box .share-qr");
+      const code = (accountStatus === "active" || isDemoMode()) ? referralCode : "";
       if (shareValue) shareValue.textContent = code || "—";
       if (codeBtn) codeBtn.setAttribute("data-copy", code);
-      if (linkBtn) linkBtn.setAttribute("data-copy", code ? `www.thehuggable.co/r/${code}` : "");
+      if (linkBtn) linkBtn.setAttribute("data-copy", code ? referralUrl(code) : "");
+      // The account's "master" referral QR — generated from the code, same
+      // styled aesthetic as the etch maker. Static icon before activation.
+      if (qrSlot) {
+        if (code && window.HugQr) {
+          qrSlot.innerHTML = window.HugQr.render(referralUrl(code), { ecc: "M" });
+          qrSlot.classList.add("share-qr-live");
+        } else {
+          qrSlot.innerHTML = '<img src="assets/icon-qr.svg" alt="QR code">';
+          qrSlot.classList.remove("share-qr-live");
+        }
+      }
     }
+
+    // Save the master referral QR as a crisp PNG so it can be shared or dropped
+    // into a video. SVG -> offscreen canvas -> PNG download.
+    function downloadReferralQr() {
+      if (!referralCode || !window.HugQr) return;
+      const svg = window.HugQr.render(referralUrl(referralCode), { ecc: "M" });
+      const svgUrl = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+      const img = new Image();
+      img.onload = () => {
+        const px = 1024;
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = px;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, px, px);
+        ctx.drawImage(img, 0, 0, px, px);
+        URL.revokeObjectURL(svgUrl);
+        canvas.toBlob(blob => {
+          if (!blob) return;
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = `hug-referral-${referralCode}.png`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+        }, "image/png");
+      };
+      img.onerror = () => URL.revokeObjectURL(svgUrl);
+      img.src = svgUrl;
+    }
+
+    // Tap the master QR to save it (wired once; innerHTML swaps keep this).
+    (function wireReferralQr() {
+      const qrSlot = document.querySelector(".share-box .share-qr");
+      if (!qrSlot) return;
+      qrSlot.setAttribute("role", "button");
+      qrSlot.setAttribute("aria-label", "Save referral QR code");
+      qrSlot.addEventListener("click", () => {
+        if (accountStatus === "active" && referralCode) downloadReferralQr();
+      });
+    })();
 
     async function refreshReferralCodeFromServer() {
       const backend = window.HugBackend;
       if (!backend?.enabled || accountStatus !== "active") return;
       const res = await backend.getMyProfile();
-      if (!res.ok || !res.referralCode) return;
-      referralCode = res.referralCode;
-      saveReferralCode(referralCode);
-      renderReferralCode();
+      if (!res.ok) return;
+      if (res.referralCode) {
+        referralCode = res.referralCode;
+        saveReferralCode(referralCode);
+        renderReferralCode();
+        // The master QR's gate render runs before this async fetch returns, so
+        // re-render it now that we finally have the code — otherwise it stays
+        // stuck on the "set up an account" nudge for a signed-in user.
+        updateReferralGate();
+      }
+      applyShippingAddress(res.shippingAddress);   // shared delivery address (web parity)
     }
+
+    // Fill the profile address form from the SHARED profiles.shipping_address.
+    // Web shape: { name, line1, line2, city, postcode, country }. The app shows a
+    // single street line, so line1+line2 are joined on read; saving folds them
+    // back into line1 (see saveAddressToProfile). Pass null to clear the form.
+    function applyShippingAddress(addr) {
+      const form = document.querySelector('.screen[data-screen="profile"] .addr-form');
+      if (!form) return;
+      const street = addr ? [addr.line1, addr.line2].filter(Boolean).join(", ") : "";
+      const map = {
+        name: addr ? (addr.name || "") : "",
+        "street-address": street,
+        city: addr ? (addr.city || "") : "",
+        "postal-code": addr ? (addr.postcode || "") : ""
+      };
+      Object.keys(map).forEach(function (k) {
+        const el = form.querySelector('[name="' + k + '"]');
+        if (el) el.value = map[k];
+      });
+      if (typeof prefillCheckoutAddress === "function") prefillCheckoutAddress();
+    }
+    window.__hugApplyShippingAddress = applyShippingAddress;
 
     function formatGbpCents(cents) {
       return "£" + (Math.max(0, Number(cents) || 0) / 100).toFixed(2);
@@ -181,13 +330,30 @@
     // is kept on window.__hugReferral for the home intro motion and future
     // account-screen wiring. Guests / signed-out show £0.00.
     function renderReferralBalance() {
-      const active = accountStatus === "active";
-      const available = active ? referralAvailableCents : 0;
-      const pending = active ? referralPendingCents : 0;
-      window.__hugReferral = { availableCents: available, pendingCents: pending };
+      const demo = isDemoMode();
+      let available, pending, cashedOut, count;
+      if (demo) {
+        // Demo balance is derived from the same history txns the cards show, so
+        // every figure ties up. (Fallback to the constants before history builds.)
+        const t = (window.__hugAccount && window.__hugAccount.totals && window.__hugAccount.totals()) || null;
+        available = t ? t.deposited : DEMO.availableCents;
+        pending = t ? t.pending : DEMO.pendingCents;
+        cashedOut = t ? t.cashedOut : (DEMO.cashedOutCents || 0);
+        count = t ? t.referrals : 0;
+      } else {
+        const active = accountStatus === "active";
+        available = active ? referralAvailableCents : 0;
+        pending = active ? referralPendingCents : 0;
+        cashedOut = active ? referralCashedOutCents : 0;
+        count = active ? referralRewardCount : 0;
+      }
+      window.__hugReferral = { availableCents: available, pendingCents: pending, cashedOutCents: cashedOut, count: count };
       document.querySelectorAll(".balance").forEach(el => {
         el.textContent = formatGbpCents(available);
       });
+      if (window.__hugAccountHistory && window.__hugAccountHistory.applySummary) window.__hugAccountHistory.applySummary();
+      if (window.__hugCashout) window.__hugCashout.refresh();
+      if (window.__hugImpact) window.__hugImpact.load();   // referral count feeds the +1/referral impact bonus
     }
 
     async function refreshReferralBalanceFromServer() {
@@ -197,6 +363,8 @@
       if (!res.ok) return;
       referralAvailableCents = res.availableCents;
       referralPendingCents = res.pendingCents;
+      referralCashedOutCents = res.cashedOutCents || 0;
+      referralRewardCount = res.count || 0;
       renderReferralBalance();
     }
 
@@ -254,6 +422,9 @@
       setHugAccountState("guest");
       closeAccountActivation();
       closeLinkedReferral();
+      applyShippingAddress(null);   // don't leak the previous user's address
+      clearHugLinkedProducts();     // wipe the previous account's linked products
+      if (window.__hugPurchases) window.__hugPurchases.clear();   // and its purchase history
     }
 
     window.clearHugAccountState = clearHugAccountState;
@@ -263,15 +434,107 @@
       return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
     }
 
+    // Referrals require at least one linked product. Drive the share-box state
+    // (guest / locked / ready) and toast when the last product is unlinked.
+    let referralGate = "";
+    function showToast(message) {
+      let el = document.getElementById("hug-toast");
+      if (!el) { el = document.createElement("div"); el.id = "hug-toast"; el.className = "hug-toast"; document.body.appendChild(el); }
+      el.textContent = message;
+      el.classList.add("show");
+      clearTimeout(el._hideTimer);
+      el._hideTimer = setTimeout(() => el.classList.remove("show"), 3400);
+    }
+    // On-theme yes/no confirm. Returns a Promise<boolean>.
+    function showConfirm(opts) {
+      const o = opts || {};
+      return new Promise(resolve => {
+        const ov = document.createElement("div");
+        ov.className = "hug-confirm-overlay";
+        ov.innerHTML =
+          '<div class="hug-confirm-card" role="dialog" aria-modal="true">' +
+            '<p class="hug-confirm-title"></p><p class="hug-confirm-body"></p>' +
+            '<div class="hug-confirm-actions">' +
+              '<button type="button" class="hug-confirm-cancel"></button>' +
+              '<button type="button" class="hug-confirm-ok"></button>' +
+            '</div></div>';
+        ov.querySelector(".hug-confirm-title").textContent = o.title || "";
+        ov.querySelector(".hug-confirm-body").textContent = o.body || "";
+        ov.querySelector(".hug-confirm-cancel").textContent = o.cancel || "Cancel";
+        ov.querySelector(".hug-confirm-ok").textContent = o.confirm || "Confirm";
+        const close = val => { ov.classList.remove("show"); setTimeout(() => ov.remove(), 220); resolve(val); };
+        ov.querySelector(".hug-confirm-cancel").addEventListener("click", () => close(false));
+        ov.querySelector(".hug-confirm-ok").addEventListener("click", () => close(true));
+        ov.addEventListener("click", e => { if (e.target === ov) close(false); });
+        document.body.appendChild(ov);
+        requestAnimationFrame(() => ov.classList.add("show"));
+      });
+    }
+    // On-brand input pop-out (same card as showConfirm, with a text field).
+    // Resolves to the trimmed value on Save, or null on Cancel / backdrop tap.
+    function showPrompt(opts) {
+      const o = opts || {};
+      return new Promise(resolve => {
+        const ov = document.createElement("div");
+        ov.className = "hug-confirm-overlay";
+        ov.innerHTML =
+          '<div class="hug-confirm-card" role="dialog" aria-modal="true">' +
+            '<p class="hug-confirm-title"></p><p class="hug-confirm-body"></p>' +
+            '<input class="hug-confirm-input">' +
+            '<div class="hug-confirm-actions">' +
+              '<button type="button" class="hug-confirm-cancel"></button>' +
+              '<button type="button" class="hug-confirm-ok"></button>' +
+            '</div></div>';
+        ov.querySelector(".hug-confirm-title").textContent = o.title || "";
+        const bodyEl = ov.querySelector(".hug-confirm-body");
+        bodyEl.textContent = o.body || ""; if (!o.body) bodyEl.style.display = "none";
+        const input = ov.querySelector(".hug-confirm-input");
+        input.type = o.type || "text";
+        input.value = o.value || "";
+        if (o.placeholder) input.placeholder = o.placeholder;
+        if (o.inputmode) input.setAttribute("inputmode", o.inputmode);
+        input.autocapitalize = "off"; input.autocomplete = o.autocomplete || "off"; input.spellcheck = false;
+        ov.querySelector(".hug-confirm-cancel").textContent = o.cancel || "Cancel";
+        ov.querySelector(".hug-confirm-ok").textContent = o.confirm || "Save";
+        const close = val => { ov.classList.remove("show"); setTimeout(() => ov.remove(), 220); resolve(val); };
+        ov.querySelector(".hug-confirm-cancel").addEventListener("click", () => close(null));
+        ov.querySelector(".hug-confirm-ok").addEventListener("click", () => close(input.value.trim()));
+        input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); close(input.value.trim()); } });
+        ov.addEventListener("click", e => { if (e.target === ov) close(null); });
+        document.body.appendChild(ov);
+        requestAnimationFrame(() => { ov.classList.add("show"); try { input.focus(); } catch (e) {} });
+      });
+    }
+    window.__hugPrompt = showPrompt;
+    function updateReferralGate() {
+      const active = isDemoMode() || accountStatus === "active";
+      const next = !active ? "guest" : (linkedProducts.length > 0 ? "ready" : "locked");
+      document.documentElement.dataset.referral = next;
+      if (referralGate === "ready" && next === "locked") {
+        showToast("Referrals paused — link a product to refer again.");
+      }
+      referralGate = next;
+      if (window.__hugMasterQr) window.__hugMasterQr.render();
+    }
+
     function renderHugAccountState() {
       if (profileEmailValue) {
-        profileEmailValue.textContent = accountStatus === "active" && accountEmail
-          ? accountEmail
-          : "guest";
-        profileEmailValue.title = accountEmail || "guest";
+        const shownEmail = isDemoMode()
+          ? DEMO.email
+          : (accountStatus === "active" && accountEmail ? accountEmail : "guest");
+        profileEmailValue.textContent = shownEmail;
+        profileEmailValue.title = shownEmail;
       }
       renderReferralCode();
       renderReferralBalance();
+      updateReferralGate();
+      // Real leaderboard + "your impact" follow the account state (login/logout).
+      if (window.__hugImpact) window.__hugImpact.load();
+      if (window.__hugLeaderboard) window.__hugLeaderboard.load();
+      if (window.__hugPoints) window.__hugPoints.load();
+      if (window.__hugUsername) window.__hugUsername.load();
+      if (window.__hugAccountHistory) window.__hugAccountHistory.loadLive();
+      if (window.__hugAccountControls) window.__hugAccountControls.render();
     }
 
     function setActivationStage(stage) {
@@ -469,6 +732,8 @@
     }
 
     function renderLinkedProducts() {
+      updateReferralGate();
+      if (window.__hugImpact) window.__hugImpact.load();   // impact ties to linked-product count
       if (!linkedProductsList || !linkedProductsEmpty) return;
       linkedProductsList.replaceChildren();
       linkedProductsEmpty.hidden = linkedProducts.length > 0;
@@ -599,13 +864,16 @@
     }
 
     async function syncAccountFromBackend() {
+      if (isDemoMode()) return;   // demo mode is self-contained display; never sync the backend over it
       const backend = window.HugBackend;
       if (!backend?.enabled) return;
+      await hugLoginReset;        // wait out the one-time forced sign-out, or it races and re-signs-in
       const res = await backend.getSession();
       if (!res.ok) return;                      // offline: keep local fallback state
       if (res.session) {
         setHugAccountState("active", res.session.email);
         refreshLinkedProductsFromServer();
+        if (window.__hugPurchases) window.__hugPurchases.refresh();
         refreshReferralCodeFromServer();
         refreshReferralBalanceFromServer();
       } else if (accountStatus === "active") {
@@ -659,7 +927,32 @@
       if (scanStatus && message) scanStatus.textContent = message;
     }
 
+    // Best-effort tactile feedback so a scan/result "feels" registered. Uses the
+    // native Haptics plugin if present (added to the shell); silent no-op otherwise.
+    function scanHaptic(kind) {
+      try {
+        const H = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Haptics;
+        if (!H) return;
+        if (kind === "success" && H.notification) { H.notification({ type: "SUCCESS" }); return; }
+        if (kind === "error" && H.notification) { H.notification({ type: "ERROR" }); return; }
+        if (H.impact) H.impact({ style: "LIGHT" });
+      } catch (e) {}
+    }
+
+    // We are genuinely ON the scanner only if EVERY signal agrees: the scan screen
+    // is active, the current screen is scan, AND scan is the SOLE active screen.
+    // Any disagreement (a stale .active, a stuck dataset.current, two active
+    // screens) means we're not scanning — so the transparent WebView must come off
+    // (otherwise the whole app goes grey and only the opaque QR stays white).
+    function isOnScanScreen() {
+      if (!(scanScreen && scanScreen.classList.contains("active"))) return false;
+      if ((phone.dataset.current || "home") !== "scan") return false;
+      const active = document.querySelectorAll(".screen.active");
+      return active.length === 1 && active[0] === scanScreen;
+    }
+    window.__hugOnScan = isOnScanScreen;
     function setScanCameraVisible(visible) {
+      if (visible && !isOnScanScreen()) visible = false;
       document.documentElement.classList.toggle("scan-camera-active", visible);
     }
 
@@ -705,24 +998,15 @@
       }
     }
 
-    async function startProductQrScan() {
+    async function startProductQrScan(attempt) {
       if (!scanScreen) return;
-      // Soft resume (JS-only, no camera restart) is only safe when we KNOW the
-      // native session survived: it is alive and the app never went hidden.
-      if (cameraSessionAlive &&
-          document.visibilityState !== "hidden" &&
-          document.documentElement.classList.contains("scan-camera-active")) {
-        scanRequestId += 1;
-        clearCandidateQrCode();
-        clearScanResult();
-        scanResult?.setAttribute("aria-hidden", "true");
-        confirmedScannedCode = "";
-        confirmedHugProductCode = "";
-        confirmedHugProduct = null;
-        setScanState("scanning", "Point the camera at a product QR code");
-        return;
-      }
+      attempt = attempt || 0;
+      // Always perform a real camera (re)start on entry (no JS-only "soft resume"
+      // over a possibly-dead session). A hung or thrown native start now AUTO-
+      // RETRIES a couple of times before surfacing a tappable "failed" — this is
+      // the fix for "open the app, go to camera, it doesn't turn on".
       const requestId = ++scanRequestId;
+      clearCandidateQrCode();
       cameraSessionAlive = false;
       clearScanResult();
       confirmedScannedCode = "";
@@ -736,20 +1020,24 @@
         return;
       }
 
-      // Watchdog: if the native start hangs, surface a tappable failed state
-      // instead of "Starting camera..." forever. A late success still recovers.
+      // Watchdog: if the start hasn't reached "scanning" quickly, auto-retry while
+      // we remain on the scan screen, then fall back to the tappable failed state.
+      // Kept short (2s) so a flaky first start self-heals on the FIRST entry
+      // instead of needing the user to leave and come back.
+      const RETRY_LIMIT = 2;
       setTimeout(function () {
         if (requestId !== scanRequestId) return;
         if (scanScreen.dataset.scanState !== "ready") return;
+        if (!scanScreen.classList.contains("active")) return;
+        if (attempt < RETRY_LIMIT) { startProductQrScan(attempt + 1); return; }
         setScanCameraVisible(false);
         setScanState("failed", "Unable to start the scanner. Tap to retry.");
-      }, 7000);
+      }, 2000);
 
       try {
         const result = await queueScanOp(function () { return window.HugNative.startQrScan(); });
         if (requestId !== scanRequestId) {
           // A newer start/stop owns the camera now; its queued ops clean up.
-          // Stopping here would race ahead and kill the newer session.
           return;
         }
         if (!scanScreen.classList.contains("active")) {
@@ -761,6 +1049,13 @@
           cameraSessionAlive = true;
           setScanCameraVisible(true);
           setScanState("scanning", "Point the camera at a product QR code");
+          // Re-assert visibility across the screen slide-in: if startScan resolved
+          // mid-transition (two screens briefly .active), isOnScanScreen() was false
+          // so the first call was gated off and the camera ran invisibly. Re-apply
+          // once the scan screen settles as the sole active screen.
+          [180, 420, 720].forEach(function (ms) {
+            setTimeout(function () { if (requestId === scanRequestId && cameraSessionAlive) setScanCameraVisible(true); }, ms);
+          });
           return;
         }
 
@@ -769,11 +1064,27 @@
           return;
         }
 
+        // Unavailable/unexpected: retry once or twice (transient), else give up.
+        if (attempt < RETRY_LIMIT && scanScreen.classList.contains("active")) {
+          startProductQrScan(attempt + 1);
+          return;
+        }
         setScanState("unavailable", "QR scanning works on device.");
       } catch (error) {
         console.error("Unable to start QR scanner", error);
+        if (requestId !== scanRequestId) return;
         cameraSessionAlive = false;
         setScanCameraVisible(false);
+        // Transient native error -> retry shortly before surfacing failure.
+        if (attempt < RETRY_LIMIT && scanScreen.classList.contains("active")) {
+          setTimeout(function () {
+            if (requestId === scanRequestId && scanScreen.classList.contains("active") &&
+                scanScreen.dataset.scanState !== "scanning") {
+              startProductQrScan(attempt + 1);
+            }
+          }, 600);
+          return;
+        }
         setScanState("failed", "Unable to start the scanner. Tap to retry.");
       }
     }
@@ -814,10 +1125,34 @@
     async function handleScannedProductCode(code) {
       const scannedCode = String(code || "").trim();
       if (!scannedCode) return;
+
+      // QR scan-to-login (web account): "hug-login:<token>" — confirm, then approve.
+      // Handled before the unit-QR logic; never falls through.
+      if (scannedCode.toLowerCase().startsWith("hug-login:")) {
+        const token = scannedCode.slice("hug-login:".length);
+        try { await window.HugNative?.stopQrScan?.(); } catch (e) {}
+        if (accountStatus !== "active") {
+          showToast("Sign in to the app first, then scan to log in on web.");
+          return;
+        }
+        const ok = await showConfirm({
+          title: "Log in to account?",
+          body: "Sign in to your hug account in a web browser.",
+          confirm: "Log in",
+          cancel: "Cancel"
+        });
+        if (!ok) return;
+        const res = await window.HugBackend?.approveQrLogin(token);
+        showToast(res && res.ok
+          ? "Logged in on web ✓"
+          : "That code expired — refresh the web page and scan again.");
+        return;
+      }
+
       confirmedScannedCode = scannedCode;
       const handlingRequestId = scanRequestId;
       const parsedCode = parseHugQrCode(scannedCode);
-      await new Promise(function (resolve) { setTimeout(resolve, 520); });
+      await new Promise(function (resolve) { setTimeout(resolve, 320); });
       if (handlingRequestId !== scanRequestId) return;
 
       // Server unit QR (https://www.thehuggable.co/u/<token>): resolve against Supabase.
@@ -880,6 +1215,7 @@
         if (scanResultMessage) {
           scanResultMessage.textContent = `${confirmedHugProduct.productName} · ${confirmedHugProduct.colourName}`;
         }
+        scanHaptic("success");
         setScanState(accountStatus === "active" ? "product-found" : "product-found-guest", "Product found");
         return;
       }
@@ -924,6 +1260,7 @@
       if (scanState !== "scanning") return;
       const code = String(event.detail?.rawValue || event.detail?.displayValue || event.detail?.code || "").trim();
       if (!code) return;
+      scanHaptic("light");   // tactile "scan registered" the instant a code is read
       setScanState("processing", "Checking product QR...");
       handleScannedProductCode(code);
     });
@@ -1466,6 +1803,7 @@
     hydrateCombinedSvgIcons();
 
     function showScreen(name, options = {}) {
+      if (window.HugDiag) window.HugDiag.log("screen", { name });
       const scanWasActive = scanScreen?.classList.contains("active");
       if (scanWasActive && name !== "scan") {
         stopProductQrScan({ state: null });
@@ -1501,6 +1839,9 @@
       phone.classList.remove("is-pulling-x");
       phone.classList.remove("bag-closing");
       phone.dataset.current = name;
+      // Belt-and-suspenders: the transparent-WebView class must never linger on a
+      // non-scan screen, or the whole app greys out (native backdrop shows through).
+      if (name !== "scan") document.documentElement.classList.remove("scan-camera-active");
       if (name === "account") {
         document.querySelectorAll(".history-list").forEach(list => {
           list.scrollTop = 0;
@@ -1508,8 +1849,17 @@
         });
         syncHistoryFade();
       }
+      if (name === "profile") {
+        const pc = document.querySelector('.screen[data-screen="profile"] .content');
+        if (pc) pc.scrollTop = 0;
+      }
       if (name === "scan") {
-        startProductQrScan();
+        // Defer the native camera start until the scan screen has actually laid
+        // out + painted — starting it against a 0-sized viewport is the "only
+        // works on the second pass" bug. Guard in case we navigated away again.
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (scanScreen && scanScreen.classList.contains("active")) startProductQrScan();
+        }));
       }
     }
 
@@ -1593,9 +1943,17 @@
         }, BAG_COUNT_FADE_MS);
       });
       if (checkoutTotalValue) {
-        checkoutTotalValue.textContent = `£${(total * unitPrice + (total > 0 ? giftWrapFee() : 0)).toFixed(2)}`;
+        const mugSubtotal = total * unitPrice;
+        const discount = (referralApplied && total > 0) ? mugSubtotal * REFERRAL_DISCOUNT_RATE : 0;
+        const grand = mugSubtotal - discount + (total > 0 ? giftWrapFee() + giftCardFee() : 0);
+        checkoutTotalValue.textContent = `£${grand.toFixed(2)}`;
+        if (checkoutDiscountRow) {
+          checkoutDiscountRow.hidden = discount <= 0;
+          if (checkoutDiscountValue) checkoutDiscountValue.textContent = `−£${discount.toFixed(2)}`;
+        }
       }
       renderCheckoutItems();
+      prefillCheckoutAddress();
     }
 
     function renderCheckoutItems() {
@@ -1913,6 +2271,15 @@
     function onNavAction(target, options = {}) {
       const trigger = options.trigger || "tap";
       const current = phone.dataset.current || "home";
+      // Any move off the scan screen drops the transparent camera overlay at once,
+      // so a stale leak can't grey out the whole app on the destination screen.
+      if (target !== "scan") document.documentElement.classList.remove("scan-camera-active");
+      // Profile must open at the top (the address-edit keyboard lift can leave its
+      // scroll partway down, hiding the title behind the header).
+      if (target === "profile") {
+        var __pc = document.querySelector('.screen[data-screen="profile"] .content');
+        if (__pc) __pc.scrollTop = 0;
+      }
       // Collapse duplicate same-target calls fired by one physical tap
       // (e.g. a settings row's pointerdown opens a screen and the trailing
       // click would otherwise re-fire and toggle it closed). A deliberate
@@ -2034,6 +2401,14 @@
           bagScreen.style.setProperty("--pull-x", "0px");
           nextScreen.classList.add("active");
           phone.dataset.current = next;
+          // Bag→scan uses this manual transition (NOT showScreen), so the native
+          // camera was never started — kick it off now that the scan screen is the
+          // sole active screen (deferred a frame so it lays out first).
+          if (next === "scan") {
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+              if (scanScreen && scanScreen.classList.contains("active")) startProductQrScan();
+            }));
+          }
         }, BAG_EXIT_MS + 36);
       };
       if (current !== "settings") {
@@ -2333,6 +2708,177 @@
     const bagVariantLabel = document.querySelector(".product-variant");
     const bagCarouselSlides = bagCarousel ? Array.from(bagCarousel.querySelectorAll(".product-render")) : [];
     const bagVariantNames = ["Dark Roast", "Cherry Pop", "Blue Crush", "Lemon Drop"];
+
+    /* Shopify checkout hand-off: build a Storefront cart from the bag and open
+       Shopify's hosted checkout (where Apple/Google Pay live). The referral_code
+       (a referrer's code, if captured) rides as a cart attribute so the friend's
+       10% + the referrer reward fire — same as the web flow. Needs HugShop
+       configured (Storefront token set). */
+    const SHOPIFY_VARIANT_GIDS = [
+      "gid://shopify/ProductVariant/53993082585427", // dark roast
+      "gid://shopify/ProductVariant/53993082650963", // cherry pop
+      "gid://shopify/ProductVariant/53993082618195", // blue crush
+      "gid://shopify/ProductVariant/53993082683731"  // lemon drop
+    ];
+    const SHOPIFY_GIFTWRAP_GID = "gid://shopify/ProductVariant/54045320085843"; // "Gift wrap" add-on, £5
+    const SHOPIFY_GIFTCARD_GID = "gid://shopify/ProductVariant/54058678976851"; // "Greeting card" add-on, £4
+    // Build the Storefront cart lines from the bag, carrying per-unit gift wrap +
+    // card message so the Shopify order matches the app: a unit with a card
+    // message or gift wrap becomes its own line (with line attributes); plain
+    // units of a colour aggregate; one Gift-wrap product line (£3 each) charges
+    // the wrap fee. Per-unit gift state comes from giftWrapFeature (__hugGiftState).
+    // Card property labels — must match the website product card verbatim so
+    // app + web orders read identically in Shopify.
+    const CARD_DESIGN_NAMES = ["Linen", "Bloom", "Sage", "Confetti"];
+    const CARD_STYLE_LABELS = { plain: "Plain", hand: "Handwritten", arcade: "Retro", ransom: "Ransom" };
+    function buildShopifyLines() {
+      const lines = [];
+      const gift = (typeof window.__hugGiftState === "function") ? (window.__hugGiftState() || {}) : {};
+      let wrappedUnits = 0, cardUnits = 0;
+      for (let i = 0; i < cartQty.length; i++) {
+        const gid = SHOPIFY_VARIANT_GIDS[i];
+        if (!gid || cartQty[i] <= 0) continue;
+        let plain = 0;
+        for (let u = 1; u <= cartQty[i]; u++) {
+          const s = gift[i + "_" + u];
+          const wrapped = !!(s && s.wrap);
+          const message = s && s.message ? String(s.message).trim() : "";
+          // A "card" counts if it has a message, a composed image, a photo or stickers.
+          const hasCard = !!(s && s.card && (message || (s.art && s.art.url) || s.photo || (s.stickers && s.stickers.length)));
+          if (wrapped) wrappedUnits++;
+          if (hasCard) cardUnits++;
+          if (wrapped || hasCard) {
+            const attributes = [];
+            if (hasCard) {
+              if (message) attributes.push({ key: "Card message", value: message });
+              attributes.push({ key: "Card design", value: CARD_DESIGN_NAMES[(s && (s.design != null ? s.design : s.cardStyle)) || 0] || "Linen" });
+              attributes.push({ key: "Card style", value: CARD_STYLE_LABELS[(s && s.font) || "plain"] || "Plain" });
+              // The composed card artwork (photo + stickers + text), uploaded to card-art.
+              if (s.art && s.art.url) {
+                attributes.push({ key: "Card art", value: s.art.summary || "custom card" });
+                attributes.push({ key: "_Card image", value: s.art.url });
+                if (s.art.path) attributes.push({ key: "_Card art", value: s.art.path });
+              }
+            }
+            if (wrapped) attributes.push({ key: "Gift wrap", value: "paper " + (((s && s.paper) || 0) + 1) });
+            lines.push({ merchandiseId: gid, quantity: 1, attributes });
+          } else {
+            plain++;
+          }
+        }
+        if (plain > 0) lines.push({ merchandiseId: gid, quantity: plain });
+      }
+      if (wrappedUnits > 0) lines.push({ merchandiseId: SHOPIFY_GIFTWRAP_GID, quantity: wrappedUnits });
+      if (cardUnits > 0) lines.push({ merchandiseId: SHOPIFY_GIFTCARD_GID, quantity: cardUnits });
+      return lines;
+    }
+    // The referrer's code, if the buyer was referred (typed in the checkout field
+    // or captured from a deep link). Never the buyer's own code (no self-referral).
+    function getCheckoutReferralCode() {
+      const field = document.querySelector(".discount-field");
+      const typed = field && field.value ? field.value.trim().toUpperCase() : "";
+      let stored = "";
+      try { stored = (localStorage.getItem("hug-incoming-ref-v1") || "").trim().toUpperCase(); } catch (e) {}
+      const code = typed || stored;
+      const own = String(referralCode || "").toUpperCase();
+      return code && code !== own ? code : null;
+    }
+    // "apply" the referral code: validate it, then preview the 10% off in the
+    // total. (The code rides to Shopify at checkout regardless via the cart
+    // attribute; this just gives in-app feedback that it took.) Returns a status.
+    function applyReferralCode() {
+      const field = document.querySelector(".discount-field");
+      const typed = field && field.value ? field.value.trim().toUpperCase() : "";
+      if (!typed) return "empty";
+      if (typed === String(referralCode || "").toUpperCase()) return "own";   // no self-referral
+      referralApplied = true;
+      updateCart();
+      return "applied";
+    }
+    function resetReferralApplied() {
+      if (!referralApplied) return;
+      referralApplied = false;
+      updateCart();
+    }
+    window.__hugApplyReferral = applyReferralCode;
+    window.__hugResetReferral = resetReferralApplied;
+    // The delivery address shown on the in-app checkout (auto-filled from the
+    // profile, editable) — passed to Shopify so the hosted checkout is prefilled.
+    function getCheckoutAddress() {
+      function v(n){ var el = document.querySelector('.checkout-entry-field[name="' + n + '"]'); return el && el.value ? el.value.trim() : ""; }
+      var name = v("name"), street = v("street-address"), city = v("city"), zip = v("postal-code");
+      if (!street && !city && !zip) return null;
+      var parts = name.split(/\s+/).filter(Boolean);
+      return { firstName: parts.shift() || name, lastName: parts.join(" "), address1: street, city: city, zip: zip, country: "United Kingdom" };
+    }
+    // Copy the profile address into any EMPTY checkout fields (manual edits kept).
+    function prefillCheckoutAddress() {
+      var src = document.querySelector('.screen[data-screen="profile"] .addr-form');
+      if (!src) return;
+      document.querySelectorAll('.checkout-entry-field').forEach(function (input) {
+        if (input.value && input.value.trim()) return;
+        var nm = input.getAttribute('name');
+        var from = nm && src.querySelector('[name="' + nm + '"]');
+        if (from && from.value) {
+          input.value = from.value;
+          var row = input.closest('.checkout-entry-row');
+          if (row) row.classList.add('has-value');
+        }
+      });
+    }
+    // Map a checkout-failure reason (from HugShop.createCheckout / buy) to copy
+    // that tells the buyer what actually went wrong — distinguishing a network
+    // drop, a not-yet-configured shop, and a store-side rejection (the kind that
+    // currently bounces the hosted checkout). The precise stage is also in the
+    // diagnostics log (HugDiag) so support can pinpoint app vs Shopify vs network.
+    function checkoutFailureCopy(status) {
+      switch (status) {
+        case "network":
+          return "You appear to be offline. Check your connection and try again.";
+        case "shop-unconfigured":
+        case "missing-variant":
+          return "Checkout isn't available yet.";
+        case "auth":
+          return "Checkout is temporarily unavailable. Please try again shortly.";
+        case "rejected":
+        case "no-url":
+        case "api-error":
+        case "http":
+        case "bad-response":
+          return "Checkout couldn't open — this looks like a store setup issue, not your device. We're on it.";
+        default:
+          return "Couldn't start checkout — please try again.";
+      }
+    }
+    async function startShopifyCheckout(trigger) {
+      const lines = buildShopifyLines();
+      if (!lines.length) { showToast("Your bag is empty."); return; }
+      const shop = window.HugShop;
+      if (!shop || !shop.configured) { showToast("Checkout isn't available yet."); return; }
+      if (window.HugDiag) window.HugDiag.log("checkout:open", { lines: lines.length });
+      const label = trigger ? trigger.textContent : "";
+      if (trigger) { trigger.disabled = true; trigger.textContent = "opening…"; }
+      try {
+        const res = await shop.buy({ lines, referralCode: getCheckoutReferralCode(), address: getCheckoutAddress() });
+        if (!res || !res.ok) {
+          const status = (res && res.status) || "failed";
+          if (window.HugDiag) window.HugDiag.log("checkout:ui-fail", { status });
+          showToast(checkoutFailureCopy(status));
+        } else if (res.status === "completed") {
+          if (window.HugDiag) window.HugDiag.log("checkout:completed", {});
+          showToast("Order placed — thank you!");
+        }
+        // "cancelled" (user closed the sheet) and "presented"/browser (checkout is
+        // open) need no toast.
+      } catch (e) {
+        if (window.HugDiag) window.HugDiag.err("checkout", e);
+        showToast("Couldn't start checkout — please try again.");
+      } finally {
+        if (trigger) { trigger.disabled = false; trigger.textContent = label || "checkout"; }
+      }
+    }
+    document.querySelector(".pay-button")?.addEventListener("click", function () { startShopifyCheckout(this); });
+
     let bagCarouselIndex = Math.max(0, bagCarouselSlides.findIndex(slide => slide.classList.contains("is-visible")));
     if (bagCarouselIndex < 0) bagCarouselIndex = 0;
     let bagCarouselDragX = 0;
@@ -2772,51 +3318,56 @@
       return row;
     }
 
-    function routeSettingsByPoint(x, y, event) {
-      if ((phone.dataset.current || "home") !== "settings") return false;
+    window.__hugNav = onNavAction;   // let other features (e.g. post-login) navigate
+    function settingsRowAtPoint(x, y) {
+      if ((phone.dataset.current || "home") !== "settings") return null;
       const rows = document.querySelectorAll(".screen[data-screen='settings'].active .simple-row[data-go]");
       for (const row of rows) {
         const r = row.getBoundingClientRect();
-        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
-          event?.stopPropagation?.();
-          event?.preventDefault?.();
-          onNavAction(row.dataset.go);
-          return true;
-        }
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return row;
       }
-      return false;
+      return null;
+    }
+    function settingsRowFrom(event) {
+      return resolveActiveSettingsRow(event.target) || settingsRowAtPoint(event.clientX ?? 0, event.clientY ?? 0);
     }
 
-    document.querySelectorAll(".screen[data-screen='settings'] .simple-row[data-go]").forEach(row => {
-      row.addEventListener("click", event => {
-        event.stopPropagation();
-        onNavAction(row.dataset.go);
-      });
-    });
+    // Settings rows activate on a deliberate TAP — pointer down AND up with little
+    // movement — never on pointerdown alone. A light brush or the start of a scroll
+    // must not navigate. If the finger moves past a small slop threshold it's a
+    // scroll, and the candidate tap is cancelled.
+    const SETTINGS_TAP_MOVE = 12;   // px of travel past which it's a scroll, not a tap
+    const SETTINGS_TAP_TIME = 800;  // ms; a slower press isn't a tap
+    let settingsTapCand = null;
+    let settingsNavAt = 0;
+    const tapMoved = (e, c) => Math.abs((e.clientX ?? 0) - c.x) > SETTINGS_TAP_MOVE || Math.abs((e.clientY ?? 0) - c.y) > SETTINGS_TAP_MOVE;
 
     phone.addEventListener("pointerdown", event => {
-      if (routeSettingsByPoint(event.clientX, event.clientY, event)) return;
-      const settingsRow = resolveActiveSettingsRow(event.target);
-      if (!settingsRow) return;
-      event.stopPropagation();
-      event.preventDefault?.();
-      onNavAction(settingsRow.dataset.go);
+      const row = settingsRowFrom(event);
+      settingsTapCand = row ? { row, x: event.clientX, y: event.clientY, t: Date.now() } : null;
     }, true);
-
-    phone.addEventListener("touchstart", event => {
-      if (prefersPointerInput) return;
-      const t = event.changedTouches?.[0];
-      if (t && routeSettingsByPoint(t.clientX, t.clientY, event)) return;
-      const settingsRow = resolveActiveSettingsRow(event.target);
-      if (!settingsRow) return;
+    phone.addEventListener("pointermove", event => {
+      if (settingsTapCand && tapMoved(event, settingsTapCand)) settingsTapCand = null;
+    }, true);
+    phone.addEventListener("pointerup", event => {
+      const cand = settingsTapCand;
+      settingsTapCand = null;
+      if (!cand) return;
+      if (Date.now() - cand.t > SETTINGS_TAP_TIME) return;       // too slow → not a tap
+      if (tapMoved(event, cand)) return;                          // moved → it was a scroll
+      if (settingsRowFrom(event) !== cand.row) return;            // lifted off the row
       event.stopPropagation();
-      event.preventDefault?.();
-      onNavAction(settingsRow.dataset.go);
-    }, { capture: true, passive: false });
+      settingsNavAt = Date.now();
+      onNavAction(cand.row.dataset.go);
+    }, true);
+    phone.addEventListener("pointercancel", () => { settingsTapCand = null; }, true);
 
+    // Fallback (non-pointer environments / safety net). Native click already
+    // discriminates tap vs scroll; suppress it briefly after a pointer tap so the
+    // synthesized click can't double-fire the navigation.
     phone.addEventListener("click", event => {
-      if (routeSettingsByPoint(event.clientX ?? 0, event.clientY ?? 0, event)) return;
-      const settingsRow = resolveActiveSettingsRow(event.target);
+      if (Date.now() - settingsNavAt < SETTINGS_TAP_TIME) return;
+      const settingsRow = settingsRowFrom(event);
       if (!settingsRow) return;
       event.stopPropagation();
       onNavAction(settingsRow.dataset.go);
@@ -2870,6 +3421,10 @@
       const target = event.target;
       const navButton = target?.closest?.("[data-go]");
       if (navButton) return;
+      // The guest/locked nudge ("set up account" / "link a product") is its own
+      // control — let its tap through instead of navigating home (same exemption
+      // pattern as the scan/bag/account tap-to-home handlers below).
+      if (target?.closest?.(".qr-nudge")) return;
       event.stopPropagation?.();
       onNavAction("home", { trigger: "tap" });
     }
@@ -2918,7 +3473,9 @@
       const target = event.target;
       const navButton = target?.closest?.("[data-go]");
       if (navButton) return;
-      if (target?.closest?.(".history-wrap, .txn-detail")) return;
+      // The deposited card is its own cash-out control — let its click through
+      // instead of treating the tap as a navigate-away gesture.
+      if (target?.closest?.(".history-wrap, .txn-detail, .simple-row.wide.approved")) return;
       const inAccountContent = target?.closest?.(".screen[data-screen='account'].active .content");
       if (!inAccountContent) return;
       event.stopPropagation?.();
@@ -4209,6 +4766,8 @@
         pay:PAY[k % PAY.length], channel:CHAN[k % CHAN.length] });
     }
     var YEAR = 2026;
+    // Prototype-only sample referral history. Fresh mode = empty history.
+    if (isDemoMode()) {
     // 4 newest orders from new referred friends -> brings the order total to 204.
     [['rowan',5,8,6,'pending'],['sienna',5,7,3,'pending'],['felix',5,6,6,'pending'],['amara',5,5,3,'pending']]
       .forEach(function(s){ pushTxn(s[0], new Date(YEAR, s[1], s[2]), s[3], s[4]); });
@@ -4222,9 +4781,10 @@
     var cur = new Date(YEAR, 0, 20), amts = [3,6,9,3,6,3,9,6,3,6,9,3];
     for(var i=0; i<180; i++){
       cur = new Date(cur.getTime() - (5 + (i%5)) * 86400000);
-      pushTxn(NAMES[(i+7) % NAMES.length], new Date(cur), amts[i % amts.length], 'approved');
+      pushTxn(NAMES[(i+7) % NAMES.length], new Date(cur), amts[i % amts.length], 'cashed_out');
     }
-    var CURRENT_YEAR = txns[0].date.getFullYear();
+    }
+    var CURRENT_YEAR = txns[0] ? txns[0].date.getFullYear() : YEAR;
     function fmtDate(dt){
       var s = MON[dt.getMonth()] + ' ' + dt.getDate();
       if(dt.getFullYear() !== CURRENT_YEAR) s += ' ' + dt.getFullYear();
@@ -4310,7 +4870,7 @@
         + '<div class="txn-head"><span class="txn-name">'+t.name+'</span>'
         + '<span class="txn-amt gradient-accent">+'+GBP(t.amt)+'</span></div>'
         + '<div class="txn-meta">'+dstr+'</div>'
-        + '<div class="txn-status txn-'+t.st+'">'+(t.st==='pending'?'cashback pending':'cashback deposited')+'</div>'
+        + '<div class="txn-status txn-'+t.st+'">'+(t.st==='pending'?'cashback pending':(t.st==='cashed_out'?'cashed out':'cashback deposited'))+'</div>'
         + '<div class="txn-sec">order</div><div class="txn-lines">'+rows+'</div>'
         + '<div class="txn-line txn-total"><span>order total</span><span>'+GBP(t.subtotal)+'</span></div>'
         + '<div class="txn-line"><span>cashback (10%)</span><span class="gradient-accent">+'+GBP(t.amt)+'</span></div>'
@@ -4370,31 +4930,77 @@
       return null;
     }
     var cellQr=summaryCell('qr scans'), cellRef=summaryCell('referrals'), cellOrd=summaryCell('orders'),
-        cellPend=summaryCell('cashback pending'), cellDep=summaryCell('cashback deposited');
+        cellPend=summaryCell('cashback pending'), cellDep=summaryCell('cashback deposited'),
+        cellCashed=summaryCell('cashed out');
     var QR_SCANS = cellQr ? (parseInt(cellQr.textContent,10)||0) : 0; // standalone: scans aren't in the referral txns
     function gbpP(p){ return '£'+(p/100).toFixed(2); }
     function computeTotals(){
-      var pend=0, dep=0, orders=0, friends={};
+      var pend=0, dep=0, cashed=0, orders=0, friends={};
       for(var k=0;k<txns.length;k++){
         var t=txns[k];
         friends[t.name]=1;                 // referral counted even if the order is later cancelled
         if(t.cancelled) continue;          // a returned order leaves cashback + order count
         orders++;
-        if(t.st==='pending') pend+=Math.round(t.amt*100); else dep+=Math.round(t.amt*100);
+        if(t.st==='pending') pend+=Math.round(t.amt*100);
+        else if(t.st==='cashed_out') cashed+=Math.round(t.amt*100);
+        else dep+=Math.round(t.amt*100);
       }
-      return { pending:pend, deposited:dep, orders:orders,
+      return { pending:pend, deposited:dep, cashedOut:cashed, orders:orders,
         referrals:Object.keys(friends).length, qrScans:QR_SCANS };
     }
     function applySummary(){
-      var s=computeTotals();
-      if(cellQr) cellQr.textContent=String(s.qrScans);
-      if(cellRef) cellRef.textContent=String(s.referrals);
-      if(cellOrd) cellOrd.textContent=String(s.orders);
-      if(cellPend) cellPend.textContent=gbpP(s.pending);
-      if(cellDep) cellDep.textContent=gbpP(s.deposited);
-      return s;
+      var referrals, pending, deposited, cashedOut;
+      if(isDemoMode()){
+        var c = computeTotals();
+        referrals = c.orders;                 // every referral ended in an order -> referrals = orders
+        pending = c.pending; deposited = c.deposited; cashedOut = c.cashedOut;
+      } else {
+        var ref = window.__hugReferral || {};
+        referrals = ref.count || 0;
+        pending = ref.pendingCents || 0; deposited = ref.availableCents || 0; cashedOut = ref.cashedOutCents || 0;
+      }
+      // A QR scan is a potential order; a referral is a converted one -> scans >> referrals.
+      var scans = referrals > 0 ? Math.round(referrals * 2.8) : 0;
+      if(cellQr) cellQr.textContent = String(scans);
+      if(cellRef) cellRef.textContent = String(referrals);
+      if(cellPend) cellPend.textContent = gbpP(pending);
+      if(cellDep) cellDep.textContent = gbpP(deposited);
+      if(cellCashed) cellCashed.textContent = gbpP(cashedOut);
+      return { pending:pending, deposited:deposited, cashedOut:cashedOut, referrals:referrals, scans:scans };
     }
     applySummary();
+
+    // Live (fresh) account: load the user's REAL referrals into the history +
+    // tag each by bucket; demo keeps its own txns built above.
+    function buildLiveTxn(row){
+      var d = row.created_at ? new Date(row.created_at) : new Date();
+      var st = row.bucket==='pending' ? 'pending' : (row.bucket==='cashed_out' ? 'cashed_out' : 'approved');
+      return { id: row.order_number || ('HUG-'+String(row.id||'').slice(0,8)),
+        name: row.name || 'a friend', date: d, amt: (Number(row.reward_cents)||0)/100, st: st, time: '',
+        items: [{ name: row.order_summary || 'order', qty: 1, price: 0 }],
+        subtotal: 0, pay: '—', channel: row.channel || '', cancelled: false };
+    }
+    function loadLive(){
+      if(isDemoMode()) return;
+      var backend = window.HugBackend;
+      if(document.documentElement.dataset.accountStatus !== 'active' || !(backend && backend.getReferralHistory)){
+        txns = []; CURRENT_YEAR = new Date().getFullYear(); render('', true); applySummary(); return;
+      }
+      backend.getReferralHistory(200).then(function(res){
+        txns = (res && res.ok && Array.isArray(res.rows)) ? res.rows.map(buildLiveTxn) : [];
+        CURRENT_YEAR = txns[0] ? txns[0].date.getFullYear() : new Date().getFullYear();
+        render('', true); applySummary();
+      }).catch(function(){ txns=[]; render('', true); applySummary(); });
+    }
+    // Demo cash-out: move all matured (deposited) cashback into "cashed out" so
+    // the numbers shift exactly as a real cash-out would, then re-render.
+    function cashOutDemo(){
+      for(var k=0;k<txns.length;k++){ if(txns[k].st==='approved') txns[k].st='cashed_out'; }
+      render('', true); applySummary();
+      if(typeof renderReferralBalance==='function') renderReferralBalance();
+    }
+    window.__hugAccountHistory = { loadLive: loadLive, applySummary: applySummary, cashOutDemo: cashOutDemo };
+    loadLive();
     /* Returning an item cancels a pending order: the order count and pending
        cashback drop; referrals and qr scans are unchanged; the row leaves the list.
        Call window.__hugAccount.cancelOrder("<name>") (a pending entry). */
@@ -4437,6 +5043,99 @@
   })();
 
 
+  // Robust copy: navigator.clipboard needs a secure context (https / capacitor://);
+  // over the LAN http dev server it's missing, so fall back to a hidden textarea +
+  // execCommand. This is why "copy" looked like it did nothing.
+  function legacyCopy(val){
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = val; ta.setAttribute('readonly','');
+      ta.style.position='fixed'; ta.style.top='-1000px'; ta.style.opacity='0';
+      document.body.appendChild(ta);
+      ta.focus(); ta.select();
+      try { ta.setSelectionRange(0, val.length); } catch(e){}
+      var ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch(e){ return false; }
+  }
+  function copyText(val){
+    val = String(val||'');
+    if(!val) return Promise.resolve(false);
+    if(window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText){
+      return navigator.clipboard.writeText(val).then(function(){return true;}, function(){return legacyCopy(val);});
+    }
+    return Promise.resolve(legacyCopy(val));
+  }
+  window.__hugCopy = copyText;
+
+  // Render an SVG QR to a PNG Blob (transparent background by default).
+  // Rasterise the QR SVG to a TRANSPARENT (alpha) PNG data URL. The SVG carries
+  // explicit width/height so WKWebView rasterises it; clearRect (no fill) keeps the
+  // background fully transparent. 1024px = crisp + a reasonable file size.
+  function svgToPngDataUrl(svg, size){
+    return new Promise(function(resolve){
+      try {
+        var img = new Image();
+        img.onload = function(){
+          try {
+            var canvas = document.createElement('canvas');
+            canvas.width = canvas.height = size;
+            var ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, size, size);
+            ctx.drawImage(img, 0, 0, size, size);
+            resolve(canvas.toDataURL('image/png'));
+          } catch(e){ resolve(null); }
+        };
+        img.onerror = function(){ resolve(null); };
+        img.src = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+      } catch(e){ resolve(null); }
+    });
+  }
+  function dataUrlToBlob(dataUrl){
+    try {
+      var parts = String(dataUrl).split(',');
+      var mime = (parts[0].match(/:(.*?);/) || [])[1] || 'image/png';
+      var bin = atob(parts[1] || ''), len = bin.length, arr = new Uint8Array(len);
+      for(var i = 0; i < len; i++){ arr[i] = bin.charCodeAt(i); }
+      return new Blob([arr], { type: mime });
+    } catch(e){ return null; }
+  }
+  // Copy the referral QR as a transparent PNG. ON DEVICE we go through the native
+  // pasteboard plugin — WKWebView can't reliably write IMAGES via the web clipboard
+  // API and <a download> is a no-op on iOS, which is why the old path "came out with
+  // nothing". In a desktop browser/secure context we use the async clipboard; over
+  // the LAN http preview (no secure context) we download the PNG instead.
+  async function copyQrImage(code){
+    code = String(code || '');
+    if(!code || !window.HugQr) return false;
+    var svg = window.HugQr.render(referralUrl(code), { ecc:'M', transparent: true });
+    var dataUrl = await svgToPngDataUrl(svg, 1024);
+    if(!dataUrl) return false;
+    // 1) Native iOS pasteboard (the reliable path on device).
+    if(window.HugBackend && typeof window.HugBackend.copyImagePng === 'function'){
+      try { var r = await window.HugBackend.copyImagePng(dataUrl); if(r && r.ok) return true; } catch(e){}
+    }
+    // 2) Web async clipboard (desktop browsers / https).
+    if(window.isSecureContext && navigator.clipboard && window.ClipboardItem){
+      try {
+        var blob = dataUrlToBlob(dataUrl);
+        if(blob){ await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]); return true; }
+      } catch(e){}
+    }
+    // 3) Last resort (browser preview over http): download the PNG.
+    try {
+      var dl = dataUrlToBlob(dataUrl); if(!dl) return false;
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(dl);
+      a.download = 'hug-referral-' + code + '.png';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function(){ URL.revokeObjectURL(a.href); }, 2000);
+      return true;
+    } catch(e){ return false; }
+  }
+  window.__hugCopyQrImage = copyQrImage;
+
   (function profileShare(){
     Array.prototype.forEach.call(document.querySelectorAll('.copy-btn[data-copy]'), function(btn){
       var label = btn.textContent, timer = null;
@@ -4447,18 +5146,138 @@
       }
       btn.addEventListener('click', function(e){
         e.stopPropagation();
-        var val = btn.getAttribute('data-copy');
-        try {
-          if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(val).then(flash, flash); }
-          else { flash(); }
-        } catch(err){ flash(); }
+        var line = btn.closest('.share-line');
+        if(line && line.querySelector('.share-qr')){
+          // The QR's copy button copies the QR IMAGE (transparent PNG), not the URL.
+          copyQrImage(referralCode).then(function(){ flash(); });
+          return;
+        }
+        copyText(btn.getAttribute('data-copy')).then(function(){ flash(); });
       });
       ['pointerdown','touchstart','pointermove'].forEach(function(ev){
         btn.addEventListener(ev, function(e){ e.stopPropagation(); });
       });
     });
+    // iOS-style share button — opens the native share sheet (email / WhatsApp / …)
+    // via the Web Share API; falls back to copying the link off-device.
+    var shareBtn = document.getElementById('referral-share');
+    if(shareBtn){
+      shareBtn.addEventListener('click', function(e){
+        e.stopPropagation();
+        var code = String(referralCode || ''); if(!code) return;
+        // Link straight to the Shopify product picker with the referral baked in:
+        //   ?ref=<code>      → drives the friend's 10% + credits THIS user (hug-referral.js)
+        //   &ref_name=<user> → shows "<username>'s referral" at checkout (personable)
+        // (Branded thehuggable.co domain → swap the host once it's connected to Shopify.)
+        var name = String(window.__hugRefName || '');
+        var url = 'https://zyeeke-kx.myshopify.com/products/hug-o?ref=' + encodeURIComponent(code) + (name ? '&ref_name=' + encodeURIComponent(name) : '');
+        var text = 'Every drink in one cup — brewer, cold brew, shaker, bottle, insulated cup. Nine heights, all in your pocket. Here’s 10% off your first hug:';
+        var payload = { title: 'hug', text: text, url: url, dialogTitle: 'Share your hug link' };
+        // Native share sheet first (reliable on iOS + Android), then Web Share, then copy.
+        Promise.resolve(window.HugBackend && window.HugBackend.shareLink ? window.HugBackend.shareLink(payload) : { ok:false })
+          .then(function(res){
+            if(res && res.ok) return;
+            if(navigator.share){ navigator.share({ title: payload.title, text: text, url: url }).catch(function(){}); return; }
+            copyText(url).then(function(){ showToast('Referral link copied'); });
+          });
+      });
+      ['pointerdown','touchstart','pointermove'].forEach(function(ev){ shareBtn.addEventListener(ev, function(e){ e.stopPropagation(); }); });
+    }
   })();
 
+
+  // Master referral QR: render the user's real QR into the big QR screen + the
+  // small centre nav thumbnails — but only when ACTIVE (account + a linked product
+  // = gate "ready"). Guests get a nudge to set up; account-without-product gets a
+  // nudge to link one. They always HAVE a master QR; it's only live once linked.
+  (function masterQrFeature(){
+    var mainQr = document.querySelector('.screen[data-screen="qr"] .main-qr');
+    var qrContent = document.querySelector('.screen[data-screen="qr"] .qr-content');
+    var nudge = null;
+    if(qrContent){ nudge = document.createElement('div'); nudge.className = 'qr-nudge'; qrContent.appendChild(nudge); }
+    function dataUri(code){
+      // Transparent (no white panel): on the opaque white app it's black-on-white
+      // (scannable) and blends in. Crucially this removes the opaque-white QR that,
+      // on a non-opaque WebView, makes iOS render the rest of the page grey. The
+      // download/copy QRs keep their white panel (for sharing/printing) elsewhere.
+      var svg = window.HugQr ? window.HugQr.render(referralUrl(code), { ecc:'M', transparent: true }) : '';
+      return svg ? ('data:image/svg+xml;utf8,' + encodeURIComponent(svg)) : '';
+    }
+    function setIcons(src){
+      if(mainQr) mainQr.src = src;
+      Array.prototype.forEach.call(document.querySelectorAll('.nav-icon.qr-icon'), function(img){ img.src = src; });
+    }
+    function render(){
+      var gate = document.documentElement.dataset.referral; // guest | locked | ready
+      if(gate === 'ready' && referralCode){
+        var uri = dataUri(referralCode);
+        if(uri) setIcons(uri);
+        if(mainQr) mainQr.classList.add('qr-live');
+        if(nudge){ nudge.classList.remove('show'); nudge.innerHTML = ''; }
+        return;
+      }
+      setIcons('assets/icon-qr.svg');
+      if(mainQr) mainQr.classList.remove('qr-live');
+      if(!nudge) return;
+      var locked = gate === 'locked';
+      nudge.innerHTML =
+        '<p class="qr-nudge-msg">' + (locked
+          ? 'Link a product to activate your referral QR.'
+          : 'Set up an account to get your own referral QR.') + '</p>' +
+        '<button class="qr-nudge-btn" type="button">' + (locked ? 'link a product' : 'set up account') + '</button>';
+      nudge.classList.add('show');
+      nudge.querySelector('.qr-nudge-btn').addEventListener('click', function(){
+        if(locked){ var s = document.querySelector('.screen.active .bottom-nav button[data-go="scan"]'); if(s) s.click(); }
+        else if(window.__hugAuth){ window.__hugAuth.open('signin'); }
+      });
+    }
+    window.__hugMasterQr = { render: render };
+    render();
+  })();
+
+  // Cash out: when the deposited balance reaches £20 the card pulses; tapping it
+  // opens an on-theme confirm (amount, fee if under £20, bank ending) and runs the
+  // existing referral-cashout backend (Stripe payout / Shopify store credit). Demo
+  // simulates the move locally so the figures shift exactly as they would live.
+  (function cashoutFeature(){
+    var card = document.querySelector('.account-main .simple-row.wide.approved');
+    if(!card) return;
+    var MIN = 2000; // £20 free-cash-out threshold (under £20 carries a £2 fee).
+    function avail(){ var r = window.__hugReferral || {}; return r.availableCents || 0; }
+    function gbp(c){ return '£' + (c/100).toFixed(2); }
+    function refresh(){ card.classList.toggle('cashable', avail() >= MIN); }
+    window.__hugCashout = { refresh: refresh };
+
+    async function startCashout(){
+      var a = avail();
+      if(a <= 0){ showToast('No cashback to cash out yet.'); return; }
+      var demo = isDemoMode();
+      var last4 = demo ? DEMO.bankLast4 : (window.__hugBankLast4 || '');
+      var acct = last4 ? ('your bank account ending ••' + last4) : 'your linked bank account';
+      var fee = a >= MIN ? 0 : 200;
+      var net = Math.max(0, a - fee);
+      var body = fee
+        ? ('Cash out ' + gbp(a) + ' to ' + acct + '? A £2 transfer fee applies under £20, so you’ll receive ' + gbp(net) + '. (Free once you reach £20.)')
+        : ('Cash out ' + gbp(a) + ' to ' + acct + '? No fee.');
+      var ok = await showConfirm({ title: 'Cash out', body: body, confirm: 'Cash out', cancel: 'Not now' });
+      if(!ok) return;
+      if(demo){
+        if(window.__hugAccountHistory && window.__hugAccountHistory.cashOutDemo) window.__hugAccountHistory.cashOutDemo();
+        showToast('Cashing out ' + gbp(net) + ' to ' + (last4 ? ('••' + last4) : 'your bank') + '.');
+        return;
+      }
+      var res = await (window.HugBackend && window.HugBackend.cashOutNow ? window.HugBackend.cashOutNow() : Promise.resolve({ ok: false }));
+      if(res && res.ok){
+        showToast('Cashing out ' + gbp(res.netCents || net) + ' — it’ll arrive shortly.');
+        if(typeof refreshReferralBalanceFromServer === 'function') refreshReferralBalanceFromServer();
+      } else if(res && res.status === 'needs-onboarding'){ showToast('Add your bank details first to cash out.'); }
+      else if(res && res.status === 'not-cash-method'){ showToast('Switch to bank cash-out in settings first.'); }
+      else if(res && res.status === 'below-minimum'){ showToast('A little more cashback is needed before you can cash out.'); }
+      else { showToast('Couldn’t cash out right now. Please try again.'); }
+    }
+    card.addEventListener('click', startCashout);
+    refresh();
+  })();
 
   (function leaderboardFeature(){
     var screen = document.querySelector('.screen[data-screen="home"]');
@@ -4470,23 +5289,64 @@
     var titleEl = screen.querySelector('.leader-title');
     if(!content || !board || !wrap || !list || !titleEl) return;
 
-    // 50 entries; names kept disjoint from the history transaction pool.
-    var NAMES = ['ladymoon','jack p','hanna','mia','harry','ivy','luke','maya','sam','noa',
-      'ada','bo','cass','dot','evie','fox','greta','huxley','ines','jo',
-      'kemi','lux','mona','nia','ola','peg','quincy','rae','sid','tariq',
-      'beck','coco','dane','esme','freya','gia','hutch','isla','jasper','kara',
-      'lev','niko','pim','rhys','suki','tomas','val','zadie','odie','perry'];
-    var PTS = [745,570,515,492,468,446,428,405,389,362];
-    for(var p=10; p<NAMES.length; p++){ PTS.push(Math.max(40, 350 - (p-10)*7)); }
+    // Real global leaderboard from referral_leaderboard() (the same RPC the
+    // website account page uses, so app + web rank identically). Rows:
+    // { label, referrals, is_me }. Authenticated-only; empty state otherwise.
     var GLANCE = 10;
+    var open = false;
+    var loading = false;
+    var rows = [];
+    // Curated rankings for the populated/demo build (window.__HUG_DEMO__).
+    var DEMO_ROWS = (function(){
+      var rows = [
+        { label:'ladymoon', points:341, me:false }, { label:'jack p', points:268, me:false },
+        { label:'hanna', points:229, me:false }, { label:'you', points:DEMO.points, me:true }
+      ];
+      var more = ['harry','ivy','luke','maya','sam','noa','ada','bo','cass','dot','evie','fox','greta',
+        'huxley','ines','jo','kemi','lux','mona','nia','ola','peg','quincy','rae','sid','tariq','beck',
+        'coco','dane','esme','freya','gia','hutch','isla','jasper','kara','lev','niko','pim','rhys',
+        'suki','tomas','val','zadie','odie','perry'];
+      var p = 197;
+      for(var i=0;i<more.length;i++){ rows.push({ label:more[i], points:p, me:false }); p = Math.max(20, p - 4); }
+      return rows;
+    })();
+    function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); }
     function render(full){
-      var n = full ? NAMES.length : GLANCE, html = '';
-      for(var i=0; i<n; i++){
-        html += '<div class="leader-row"><span>'+NAMES[i]+'</span><span>'+PTS[i]+'</span></div>';
+      if(!rows.length){
+        list.innerHTML = '<div class="leader-empty">refer a friend to climb the leaderboard</div>';
+        return;
       }
+      var n = full ? rows.length : Math.min(GLANCE, rows.length), html = '';
+      for(var i=0; i<n; i++){
+        var r = rows[i];
+        html += '<div class="leader-row'+(r.me?' is-me':'')+'"><span>'+esc(r.label)+'</span><span>'+r.points+'</span></div>';
+      }
+      // Not on the board yet → a gentle nudge under the standings (instead of hiding them).
+      if(!rows.some(function(r){ return r.me; })) html += '<div class="leader-empty leader-empty--footer">refer a friend to climb the leaderboard</div>';
       list.innerHTML = html;
     }
-    render(true);
+    function load(){
+      if(loading) return;
+      // Prototype/demo mode: curated rankings, no backend call.
+      if(isDemoMode()){ rows = DEMO_ROWS.slice(); render(open); return; }
+      // Live build: the leaderboard is public (anon can read referral_leaderboard),
+      // so it shows whether signed in or not.
+      if(!(window.HugBackend && window.HugBackend.enabled)){
+        rows = []; render(open); return;
+      }
+      loading = true;
+      window.HugBackend.getLeaderboard().then(function(res){
+        rows = (res && res.ok && Array.isArray(res.rows))
+          ? res.rows.map(function(x){ return { label: x.label, points: Number(x.eco_points) || 0, me: !!x.is_me }; })
+          : [];
+        // Show the global top standings to EVERYONE (even a fresh 0-point account) so
+        // the board never looks broken/empty. A not-yet-ranked viewer still gets the
+        // "refer to climb" nudge under the list (see render()).
+        render(open);
+      }).catch(function(){ rows = []; render(open); }).then(function(){ loading = false; });
+    }
+    window.__hugLeaderboard = { load: load };
+    render(open);
 
     var head = document.createElement('div'); head.className = 'leader-head';
     titleEl.parentNode.insertBefore(head, titleEl); head.appendChild(titleEl);
@@ -4499,7 +5359,6 @@
       plus.addEventListener(ev, function(e){ e.stopPropagation(); });
     });
 
-    var open = false;
     function setExpand(next){
       open = next;
       if(open){
@@ -4534,85 +5393,1203 @@
     list.addEventListener('pointerdown', function(e){ tapX = e.clientX; tapY = e.clientY; tapMoved = false; }, { passive: true });
     list.addEventListener('pointermove', function(e){ if(Math.abs(e.clientX - tapX) > 10 || Math.abs(e.clientY - tapY) > 10) tapMoved = true; }, { passive: true });
     list.addEventListener('pointerup', function(){ if(open && !tapMoved) setExpand(false); }, { passive: true });
+
+    load();
+    window.addEventListener('load', load);   // re-fetch once native-bridge is ready (guests included)
   })();
 
-  (function impactStepper(){
+  (function impactFeature(){
+    // ECO POINTS (combined, link-gated — matches the website + referral_leaderboard()):
+    //   • each LINKED hug o = 25 eco points (a full mug's offsets)
+    //   • each non-reneged referral = +5 (20% of a mug, a BONUS on top — a refund
+    //     flips it to 'reneged' and the 5 drops off automatically)
+    // The physical offset per mug is unchanged: 25 eco points = 1 mug =
+    //   40 bottles / 4 kg CO2e / 1 tree → so 1 eco point = 1.6 / 0.16 / 0.04.
+    var POINTS_PER_MUG = 25;
+    var POINTS_PER_REFERRAL = 5;
+    var PER_MUG = { bottles: 40, co2kg: 4, trees: 1 };   // real per-mug offset (the stepper)
+    var PER_POINT = { bottles: PER_MUG.bottles / POINTS_PER_MUG, co2kg: PER_MUG.co2kg / POINTS_PER_MUG, trees: PER_MUG.trees / POINTS_PER_MUG };
+    function ecoPointsFor(mugs, refs){ return POINTS_PER_MUG * (mugs || 0) + POINTS_PER_REFERRAL * (refs || 0); }
+    function fmtMass(kg){
+      if(kg >= 1000) return (Math.round(kg/100)/10) + ' t';
+      return (Math.round(kg*10)/10) + ' kg';
+    }
+    function fmtTrees(n){ return String(Math.round(n * 100) / 100); }  // 0.25 steps -> clean decimals
+    function setTriplet(nodes, b, c, t){
+      if(nodes[0]) nodes[0].textContent = b;
+      if(nodes[1]) nodes[1].textContent = c;
+      if(nodes[2]) nodes[2].textContent = t;
+    }
+
+    // (A) "your impact so far" (impact screen) + the home summary grid show the
+    // signed-in user's REAL cumulative impact: purchased mugs × the factors.
+    var homeVals = document.querySelectorAll('.home-content .impact-grid .impact-value');   // [bottles, co2, trees]
+    var soFarGroup = document.querySelectorAll('.impact-content .impact-cards')[0];          // first group = "your impact so far"
+    var soFarVals = soFarGroup ? soFarGroup.querySelectorAll('.impact-card-val') : [];
+    var ecoEl = document.getElementById('imp-eco');                                          // the eco-points hero number
+    var placeholder = null;   // original marketing copy, restored when signed out
+    function renderYourImpact(linkedMugs, refs){
+      if(!placeholder){
+        placeholder = {
+          home: Array.prototype.map.call(homeVals, function(el){ return el.textContent; }),
+          soFar: Array.prototype.map.call(soFarVals, function(el){ return el.textContent; }),
+          eco: ecoEl ? ecoEl.textContent : '0'
+        };
+      }
+      if(linkedMugs == null){
+        setTriplet(homeVals, placeholder.home[0], placeholder.home[1], placeholder.home[2]);
+        setTriplet(soFarVals, placeholder.soFar[0], placeholder.soFar[1], placeholder.soFar[2]);
+        if(ecoEl) ecoEl.textContent = placeholder.eco;
+        return;
+      }
+      var points = ecoPointsFor(linkedMugs, refs);   // 25/mug + 5/referral
+      var b = Math.round(points * PER_POINT.bottles);
+      var c = fmtMass(points * PER_POINT.co2kg);
+      var t = fmtTrees(points * PER_POINT.trees);
+      setTriplet(homeVals, b, c, t);
+      setTriplet(soFarVals, b, c, t);
+      if(ecoEl) ecoEl.textContent = String(points);
+    }
+
+    // (B) the per-mug stepper — an educational "we offset this per mug" calculator.
     var qtyEl = document.getElementById('imp-qty');
-    if(!qtyEl) return;
     var bottlesEl = document.getElementById('imp-bottles');
     var co2El = document.getElementById('imp-co2');
     var treesEl = document.getElementById('imp-trees');
     var minus = document.getElementById('imp-minus');
     var plus = document.getElementById('imp-plus');
     var qty = 1;
-    function fmtKg(n){ return (Math.round(n*10)/10) + ' kg'; }
-    function update(){
-      qtyEl.textContent = qty;
-      if(bottlesEl) bottlesEl.textContent = qty * 40;      // 40 bottles each
-      if(co2El) co2El.textContent = fmtKg(qty * 4);        // ~4 kg CO2e each
-      if(treesEl) treesEl.textContent = qty;               // 1 tree each
+    function updateStepper(){
+      if(qtyEl) qtyEl.textContent = qty;
+      if(bottlesEl) bottlesEl.textContent = qty * PER_MUG.bottles;
+      if(co2El) co2El.textContent = fmtMass(qty * PER_MUG.co2kg);
+      if(treesEl) treesEl.textContent = qty;
     }
-    if(minus) minus.addEventListener('click', function(e){ e.stopPropagation(); if(qty>1){ qty--; update(); } });
-    if(plus) plus.addEventListener('click', function(e){ e.stopPropagation(); if(qty<99){ qty++; update(); } });
-    [minus, plus].forEach(function(b){ if(!b) return;
-      ['pointerdown','touchstart','pointermove'].forEach(function(ev){ b.addEventListener(ev, function(e){ e.stopPropagation(); }); });
+    if(minus) minus.addEventListener('click', function(e){ e.stopPropagation(); if(qty>1){ qty--; updateStepper(); } });
+    if(plus) plus.addEventListener('click', function(e){ e.stopPropagation(); if(qty<99){ qty++; updateStepper(); } });
+    [minus, plus].forEach(function(bn){ if(!bn) return;
+      ['pointerdown','touchstart','pointermove'].forEach(function(ev){ bn.addEventListener(ev, function(e){ e.stopPropagation(); }); });
     });
-    update();
+    updateStepper();
+
+    // Impact ties to the number of products LINKED to the account (1 mug = 1 tree),
+    // so the offsets and the "linked products" count always match.
+    function load(){
+      var mugs, refs;
+      if(isDemoMode()){
+        mugs = (DEMO.linkedCodes && DEMO.linkedCodes.length) || 0;
+        refs = (window.__hugReferral && window.__hugReferral.count) || 0;
+      } else if(document.documentElement.dataset.accountStatus !== 'active'){
+        mugs = 0; refs = 0;   // fresh / signed-out
+      } else {
+        mugs = (typeof linkedProducts !== 'undefined' && linkedProducts) ? linkedProducts.length : 0;
+        refs = (window.__hugReferral && window.__hugReferral.count) || 0;   // non-reneged referral count
+      }
+      renderYourImpact(mugs, refs);
+      if(mugs > 0){ qty = Math.min(99, mugs); updateStepper(); }
+    }
+    window.__hugImpact = { load: load };
+    load();
   })();
 
 
-  // (19) card designer — live message + font-style picker (plain / handwritten / retro / ransom).
-  (function cardDesigner(){
-    var msg = document.getElementById('card-msg');
-    var input = document.getElementById('card-input');
-    var styles = document.getElementById('card-styles');
-    var save = document.getElementById('card-save');
-    if (!msg || !input || !styles) return;
-    var style = 'plain';
-    var KEY = 'hug_card';
-    var RF = ["'Anton',sans-serif", "'Abril Fatface',serif", "'Playfair Display',serif", "'Special Elite',cursive", "'Bungee',cursive", "'Oswald',sans-serif", "'Archivo Black',sans-serif", "'Bebas Neue',sans-serif", "Georgia,serif", "'Courier New',monospace"];
-    var RP = [['#fff','#0a0a0a'], ['#fff','#0a0a0a'], ['#0a0a0a','#fff'], ['#f3f0e7','#0a0a0a'], ['#ffe14d','#0a0a0a'], ['#eb3d7f','#fff']];
-    function rpick(a){ return a[(Math.random()*a.length)|0]; }
-    function resc(s){ return s.replace(/[&<>"]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); }
-    function rletter(ch){ var p=rpick(RP); return '<span class="ransom-ch" style="font-family:'+rpick(RF)+';background:'+p[0]+';color:'+p[1]+';transform:rotate('+(Math.random()*26-13).toFixed(1)+'deg);font-size:'+(0.85+Math.random()*0.6).toFixed(2)+'em;">'+resc(ch)+'</span>'; }
-    function ransom(t){ var o='', word=''; function flush(){ if(word){ o+='<span class="ransom-word">'+word+'</span>'; word=''; } } for (var i=0;i<t.length;i++){ var ch=t[i]; if (ch==='\n'){ flush(); o+='<span style="flex-basis:100%;height:.32em"></span>'; continue; } if (ch===' '){ flush(); continue; } word+=rletter(ch); } flush(); return o; }
-    function render(){ var t = input.value || ' '; msg.className = 'card-msg style-'+style; if (style==='ransom') msg.innerHTML = ransom(t); else msg.textContent = t; }
-    try { var saved = JSON.parse(localStorage.getItem(KEY) || 'null'); if (saved) { if (saved.message) input.value = saved.message; style = saved.style || 'plain'; styles.querySelectorAll('button').forEach(function(b){ b.classList.toggle('active', b.dataset.style===style); }); } } catch(e){}
-    input.addEventListener('input', render);
-    styles.querySelectorAll('button').forEach(function(b){ b.addEventListener('click', function(){ style = b.dataset.style; styles.querySelectorAll('button').forEach(function(x){ x.classList.toggle('active', x===b); }); render(); }); });
-    if (save) save.addEventListener('click', function(){ try { localStorage.setItem(KEY, JSON.stringify({ message: input.value.trim(), style: style })); } catch(e){} save.textContent = 'Saved ✓'; setTimeout(function(){ save.textContent = 'Save card'; }, 1400); });
+  // ----- Account auth: dedicated sign-in / set-up / set-password modal -----
+  // Self-contained overlay (independent of product scanning) so a user can sign
+  // in with the SAME hug account they use on the website. Password + email-code
+  // + sign-up-with-confirm, all on the shared Supabase project. Mirrors the web.
+  (function accountAuthFeature(){
+    var overlay = null, els = {}, mode = 'signin', stage = 'main';
+    var pendingEmail = '', pendingName = '', pendingKind = '', pendingPassword = '', busy = false;
+
+    // Remembered accounts: emails that have signed in on this device, kept so the
+    // user can re-sign-in fast (tap to fill the email, then let iOS Face ID
+    // autofill the password). Survives the sign-out reset (separate key). Emails
+    // aren't secret; the PASSWORD is never stored by us — that's iOS Keychain's job.
+    var KNOWN_EMAILS_KEY = 'hug-known-emails-v1';
+    var BIO_EMAILS_KEY = 'hug-bio-emails-v1';   // emails that have Face ID creds saved (Keychain)
+    var bioAvailable = false;                    // device has Face ID / Touch ID set up
+    function getKnownEmails(){
+      try { var a = JSON.parse(localStorage.getItem(KNOWN_EMAILS_KEY) || '[]'); return Array.isArray(a) ? a.filter(isValidEmail) : []; }
+      catch(e){ return []; }
+    }
+    function getBioEmails(){
+      try { var a = JSON.parse(localStorage.getItem(BIO_EMAILS_KEY) || '[]'); return Array.isArray(a) ? a : []; }
+      catch(e){ return []; }
+    }
+    function hasBio(email){ return getBioEmails().indexOf(String(email||'').trim().toLowerCase()) >= 0; }
+    function setBioEmail(email, on){
+      email = String(email||'').trim().toLowerCase();
+      var list = getBioEmails().filter(function(e){ return e !== email; });
+      if(on) list.unshift(email);
+      try { localStorage.setItem(BIO_EMAILS_KEY, JSON.stringify(list.slice(0, 8))); } catch(e){}
+    }
+    function refreshBioAvailable(){
+      var b = window.HugBackend;
+      if(!(b && b.biometricAvailable)) { bioAvailable = false; return Promise.resolve(false); }
+      return b.biometricAvailable().then(function(r){ bioAvailable = !!(r && r.available); return bioAvailable; })
+        .catch(function(){ bioAvailable = false; return false; });
+    }
+    // After a password sign-in, offer to enable Face ID for that account.
+    function maybeOfferBiometric(email, password){
+      if(!bioAvailable || !password) return;
+      var b = window.HugBackend;
+      if(!(b && b.saveBiometricCredentials)) return;
+      if(hasBio(email)){
+        // Already enabled — silently REFRESH the stored password every successful
+        // sign-in / password change, so Face ID can never go stale on this device.
+        b.saveBiometricCredentials(email, password);
+        return;
+      }
+      showConfirm({ title: 'Use Face ID next time?', body: 'Save this login to your device so you can sign in to ' + email + ' with Face ID — no typing.', confirm: 'Use Face ID', cancel: 'Not now' })
+        .then(function(ok){
+          if(!ok) return;
+          b.saveBiometricCredentials(email, password).then(function(res){ if(res && res.ok){ setBioEmail(email, true); rememberEmail(email); } });
+        });
+    }
+    // Tap a Face-ID-enabled chip -> biometric prompt -> sign in, no typing.
+    function biometricSignInAs(email){
+      var b = window.HugBackend;
+      if(busy || !(b && b.biometricGetCredentials)) return;
+      busy = true;
+      Promise.resolve(b.biometricGetCredentials(email)).then(function(c){
+        if(!c || !c.ok){ busy = false; return; }   // cancelled / dismissed: stay on the form
+        return b.signInWithPassword(c.email || email, c.password).then(function(si){
+          busy = false;
+          if(si && si.ok){ finishSignedIn(si.email || email); return; }
+          // Stored password is stale (e.g. it was changed on another device).
+          // Don't dump the user into a password box they may not know — drop the
+          // stale Face ID and email a code so they still get in, passwordless.
+          setBioEmail(email, false);
+          if(b.deleteBiometricCredentials) b.deleteBiometricCredentials(email);
+          els.email.value = email; renderAccountChips();
+          showToast('Face ID sign-in expired — emailing you a code.');
+          sendOtp(email);
+        });
+      }).catch(function(){ busy = false; });
+    }
+    function rememberEmail(email){
+      email = String(email||'').trim().toLowerCase();
+      if(!isValidEmail(email)) return;
+      try {
+        var list = getKnownEmails().filter(function(e){ return e !== email; });
+        list.unshift(email);
+        localStorage.setItem(KNOWN_EMAILS_KEY, JSON.stringify(list.slice(0, 4)));
+      } catch(e){}
+    }
+    function forgetEmail(email){
+      try { localStorage.setItem(KNOWN_EMAILS_KEY, JSON.stringify(getKnownEmails().filter(function(e){ return e !== email; }))); }
+      catch(e){}
+    }
+    // Tappable chips for each remembered account — only on the sign-in screen.
+    // A chip with Face ID enabled shows a face glyph and signs in on tap; others
+    // just fill the email. The × forgets the account (and its Keychain login).
+    var FACE_SVG = '<svg class="hug-auth-account-face" viewBox="0 0 24 24" aria-hidden="true">' +
+      '<path d="M4 8V6.5A2.5 2.5 0 0 1 6.5 4H8M16 4h1.5A2.5 2.5 0 0 1 20 6.5V8M20 16v1.5a2.5 2.5 0 0 1-2.5 2.5H16M8 20H6.5A2.5 2.5 0 0 1 4 17.5V16"/>' +
+      '<path d="M9 9.5v1.5M15 9.5v1.5M12 9v4l-1 1"/><path d="M9.2 15.5c1.4 1.1 4.2 1.1 5.6 0"/></svg>';
+    function renderAccountChips(){
+      if(!els.accounts) return;
+      els.accounts.innerHTML = '';
+      var emails = (mode === 'signin' && stage === 'main') ? getKnownEmails() : [];
+      els.accounts.style.display = emails.length ? '' : 'none';
+      emails.forEach(function(em){
+        var bio = bioAvailable && hasBio(em);
+        var chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'hug-auth-account' + (bio ? ' has-bio' : '');
+        chip.innerHTML = (bio ? FACE_SVG : '') + '<span class="hug-auth-account-em"></span><span class="hug-auth-account-x" aria-label="Forget">×</span>';
+        chip.querySelector('.hug-auth-account-em').textContent = em;
+        chip.addEventListener('click', function(ev){
+          if(ev.target && ev.target.classList.contains('hug-auth-account-x')){
+            ev.stopPropagation();
+            forgetEmail(em);
+            if(hasBio(em)){ setBioEmail(em, false); if(window.HugBackend && window.HugBackend.deleteBiometricCredentials) window.HugBackend.deleteBiometricCredentials(em); }
+            renderAccountChips();
+            return;
+          }
+          if(bio){ biometricSignInAs(em); return; }
+          els.email.value = em;
+          try{ els.pass.focus(); }catch(e){}
+        });
+        els.accounts.appendChild(chip);
+      });
+    }
+
+    function build(){
+      overlay = document.createElement('div');
+      overlay.className = 'hug-auth-overlay';
+      overlay.innerHTML =
+        '<div class="hug-auth-card" role="dialog" aria-modal="true" aria-labelledby="hug-auth-title">' +
+          '<button type="button" class="hug-auth-close" aria-label="Close">×</button>' +
+          '<h3 class="hug-auth-title" id="hug-auth-title"></h3>' +
+          '<p class="hug-auth-copy"></p>' +
+          '<div class="hug-auth-accounts"></div>' +
+          '<form class="hug-auth-form" novalidate>' +
+            '<input class="hug-auth-input hug-auth-name" type="text" name="name" autocomplete="name" autocapitalize="words" spellcheck="false" placeholder="name (optional)">' +
+            // autocomplete="username" + the password field below lets iOS save the
+            // login to Keychain and offer it back via Face ID / Touch ID autofill.
+            '<input class="hug-auth-input hug-auth-email" type="email" name="username" inputmode="email" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="you@example.com">' +
+            '<input class="hug-auth-input hug-auth-pass" type="password" name="password" autocomplete="current-password" placeholder="password">' +
+            '<input class="hug-auth-input hug-auth-code" type="text" inputmode="numeric" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" maxlength="10" placeholder="code from email">' +
+            '<p class="hug-auth-error" role="alert" aria-live="polite"></p>' +
+            '<button type="submit" class="hug-auth-submit"></button>' +
+          '</form>' +
+          '<div class="hug-auth-links">' +
+            '<button type="button" class="hug-auth-alt"></button>' +
+            '<button type="button" class="hug-auth-toggle"></button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(overlay);
+      ['card','title','copy','form','accounts','name','email','pass','code','error','submit','alt','toggle'].forEach(function(k){
+        els[k] = overlay.querySelector('.hug-auth-' + k);
+      });
+      overlay.querySelector('.hug-auth-close').addEventListener('click', close);
+      overlay.addEventListener('click', function(e){ if(e.target === overlay) close(); });
+      els.form.addEventListener('submit', onSubmit);
+      els.alt.addEventListener('click', onAlt);
+      els.toggle.addEventListener('click', onToggle);
+      // Keyboard-aware: lift the centered card above the on-screen keyboard so the
+      // email, password, the Sign-in button AND the "set up an account" link stay
+      // visible. The app runs Keyboard resize:"none" (visualViewport doesn't see
+      // the keyboard), so use the native plugin's reported height.
+      var K = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Keyboard;
+      if(K && K.addListener){
+        K.addListener('keyboardWillShow', function(info){
+          if(overlay && overlay.classList.contains('show'))
+            overlay.style.paddingBottom = (((info && info.keyboardHeight) || 0) + 24) + 'px';
+        });
+        K.addListener('keyboardWillHide', function(){
+          if(overlay) overlay.style.paddingBottom = '';
+        });
+      }
+    }
+
+    function setError(m){ if(els.error) els.error.textContent = m || ''; }
+
+    function render(){
+      overlay.dataset.mode = mode;
+      overlay.dataset.stage = stage;
+      setError('');
+      renderAccountChips();
+      if(stage === 'code'){
+        els.title.textContent = pendingKind === 'signup' ? 'Confirm your email' : 'Enter the code';
+        els.copy.textContent = 'We emailed a code to ' + pendingEmail + '.';
+        els.submit.textContent = pendingKind === 'signup' ? 'Create account' : 'Verify code';
+        els.alt.textContent = 'use a different email';
+        els.toggle.textContent = '';
+        requestAnimationFrame(function(){ try{ els.code.focus(); }catch(e){} });
+        return;
+      }
+      if(mode === 'setpass'){
+        els.pass.setAttribute('autocomplete','new-password');
+        if(stage === 'confirm'){
+          els.title.textContent = 'Confirm password';
+          els.copy.textContent = 'Re-enter your new password to confirm.';
+          els.pass.placeholder = 'confirm new password';
+          els.submit.textContent = 'Save password';
+          els.alt.textContent = 'back';
+        } else {
+          els.title.textContent = 'Set a password';
+          els.copy.textContent = 'Use this to sign in next time — on the app or the website.';
+          els.pass.placeholder = 'new password';
+          els.submit.textContent = 'Next';
+          els.alt.textContent = '';
+        }
+        els.toggle.textContent = '';
+        requestAnimationFrame(function(){ try{ els.pass.focus(); }catch(e){} });
+        return;
+      }
+      if(mode === 'signup' && stage === 'confirm'){
+        // Step 2 of sign-up — re-enter the password (two-step, like set-password).
+        els.pass.setAttribute('autocomplete','new-password');
+        els.title.textContent = 'Confirm password';
+        els.copy.textContent = 'Re-enter your password to confirm.';
+        els.pass.placeholder = 'confirm password';
+        els.submit.textContent = 'Create account';
+        els.alt.textContent = 'back';
+        els.toggle.textContent = '';
+        requestAnimationFrame(function(){ try{ els.pass.focus(); }catch(e){} });
+        return;
+      }
+      if(mode === 'signup'){
+        els.title.textContent = 'Set up an account';
+        els.copy.textContent = 'Create a password — it works on the app and the website.';
+        els.pass.setAttribute('autocomplete','new-password');
+        els.pass.placeholder = 'password (min 6 characters)';
+        els.submit.textContent = 'Next';
+        els.alt.textContent = '';
+        els.toggle.textContent = 'have an account? sign in';
+      } else {
+        els.title.textContent = 'Sign in';
+        els.copy.textContent = 'Your hug account — the same login as the website.';
+        els.pass.setAttribute('autocomplete','current-password');
+        els.pass.placeholder = 'password';
+        els.submit.textContent = 'Sign in';
+        els.alt.textContent = 'email me a code instead';
+        els.toggle.textContent = 'set up an account';
+      }
+      requestAnimationFrame(function(){ try{ (mode==='signup'?els.name:els.email).focus(); }catch(e){} });
+    }
+
+    function open(initialMode){
+      if(!overlay) build();
+      mode = (initialMode === 'signup' || initialMode === 'setpass') ? initialMode : 'signin';
+      stage = 'main'; pendingEmail=''; pendingName=''; pendingKind=''; pendingPassword='';
+      els.name.value=''; els.email.value=''; els.pass.value=''; els.code.value='';
+      // Pre-fill the most recently used account so re-signing in is quick.
+      if(mode === 'signin'){ var known = getKnownEmails(); if(known.length) els.email.value = known[0]; }
+      render();
+      overlay.classList.add('show');
+      // Re-render chips once we know if Face ID is set up (async), so bio chips
+      // pick up the face glyph + tap-to-Face-ID behaviour.
+      refreshBioAvailable().then(function(){ renderAccountChips(); });
+    }
+    function close(){ if(overlay){ overlay.classList.remove('show'); overlay.style.paddingBottom = ''; } }
+
+    function onToggle(){ if(stage==='code') return; mode = (mode==='signup' ? 'signin' : 'signup'); render(); }
+
+    function onAlt(){
+      // Back out of a confirm-password step (sign-up or set-password).
+      if(stage === 'confirm'){
+        stage = 'main';
+        render();
+        els.pass.value = (mode === 'signup') ? pendingPassword : '';
+        return;
+      }
+      if(stage === 'code'){ stage='main'; pendingKind=''; render(); return; }
+      var email = String(els.email.value||'').trim();
+      if(!isValidEmail(email)){ setError('Enter a valid email address.'); els.email.focus(); return; }
+      sendOtp(email);
+    }
+
+    // Disable + relabel the submit button while an async auth op runs.
+    function withBusy(label, fn){
+      busy = true; setError(''); var prev = els.submit.textContent;
+      els.submit.textContent = label; els.submit.disabled = true;
+      return fn().finally(function(){ busy = false; els.submit.disabled = false; els.submit.textContent = prev; });
+    }
+
+    function sendOtp(email){
+      var backend = window.HugBackend;
+      if(!backend || !backend.enabled){ setError('Sign-in is unavailable right now.'); return; }
+      if(busy) return;
+      withBusy('Sending…', function(){ return backend.signInWithOtp(email); }).then(function(sent){
+        if(!sent || !sent.ok){ setError("Couldn't send the code. Try again."); return; }
+        pendingEmail = email; pendingKind = 'otp'; stage = 'code'; render();
+      });
+    }
+
+    function onSubmit(e){
+      e.preventDefault();
+      var backend = window.HugBackend;
+      if(busy) return;
+      if(!backend || !backend.enabled){ setError('Sign-in is unavailable right now.'); return; }
+
+      if(stage === 'code'){
+        var code = String(els.code.value||'').trim();
+        if(!/^\d{4,10}$/.test(code)){ setError('Enter the code from the email.'); els.code.focus(); return; }
+        withBusy('Verifying…', function(){
+          return pendingKind === 'signup'
+            ? backend.verifySignup(pendingEmail, code, pendingName)
+            : backend.verifyOtp(pendingEmail, code);
+        }).then(function(res){
+          if(!res || !res.ok){ setError(res && res.status==='invalid-code' ? "That code didn't match." : "Couldn't verify the code."); els.code.focus(); try{ els.code.select(); }catch(e){} return; }
+          var em = res.email || pendingEmail;
+          finishSignedIn(em);
+          if(pendingKind === 'signup' && pendingPassword) maybeOfferBiometric(em, pendingPassword);
+        });
+        return;
+      }
+
+      if(mode === 'setpass'){
+        var np = String(els.pass.value||'');
+        if(stage !== 'confirm'){
+          // Step 1: enter the new password.
+          if(np.length < 6){ setError('Password must be at least 6 characters.'); els.pass.focus(); return; }
+          pendingPassword = np;
+          els.pass.value = '';
+          stage = 'confirm';
+          render();
+          return;
+        }
+        // Step 2: re-enter to confirm, then save.
+        if(np !== pendingPassword){ setError('Passwords don’t match. Try again.'); els.pass.focus(); try{ els.pass.select(); }catch(e){} return; }
+        withBusy('Saving…', function(){ return backend.setPassword(np); }).then(function(res){
+          if(!res || !res.ok){ setError("Couldn't save the password. Try again."); return; }
+          close(); showToast('Password saved.');
+          if(accountEmail) maybeOfferBiometric(accountEmail, np);   // now there's a password — offer Face ID
+        });
+        return;
+      }
+
+      // Sign-up is a two-step flow (enter password -> confirm on the next screen),
+      // matching set-password so every place you set a password is two-step.
+      if(mode === 'signup'){
+        var suEmail = String(els.email.value||'').trim();
+        var suPass = String(els.pass.value||'');
+        if(stage !== 'confirm'){
+          // Step 1: name + email + new password.
+          if(!isValidEmail(suEmail)){ setError('Enter a valid email address.'); els.email.focus(); return; }
+          if(suPass.length < 6){ setError('Password must be at least 6 characters.'); els.pass.focus(); return; }
+          pendingEmail = suEmail;
+          pendingName = String(els.name.value||'').trim();
+          pendingPassword = suPass;
+          els.pass.value = '';
+          stage = 'confirm';
+          render();
+          return;
+        }
+        // Step 2: re-enter to confirm, then create.
+        if(suPass !== pendingPassword){ setError('Passwords don’t match. Try again.'); els.pass.focus(); try{ els.pass.select(); }catch(e){} return; }
+        withBusy('Creating…', function(){ return backend.signUp(pendingEmail, suPass, pendingName); }).then(function(su){
+          if(!su || !su.ok){
+            if(su && su.status==='already-registered'){ setError('That email already has an account — sign in.'); mode='signin'; stage='main'; render(); els.email.value=pendingEmail; return; }
+            setError((su && su.message) || "Couldn't create the account."); stage='main'; render(); els.email.value=pendingEmail; els.pass.value=pendingPassword; return;
+          }
+          if(su.session){ finishSignedIn(pendingEmail); maybeOfferBiometric(pendingEmail, suPass); return; }   // confirm disabled -> straight in
+          pendingKind = 'signup'; stage = 'code'; render();
+        });
+        return;
+      }
+
+      var email = String(els.email.value||'').trim();
+      var pass = String(els.pass.value||'');
+      if(!isValidEmail(email)){ setError('Enter a valid email address.'); els.email.focus(); return; }
+      if(pass.length < 6){ setError('Password must be at least 6 characters.'); els.pass.focus(); return; }
+
+      withBusy('Signing in…', function(){ return backend.signInWithPassword(email, pass); }).then(function(si){
+        if(!si || !si.ok){ setError(si && si.status==='invalid-credentials' ? 'Wrong email or password — or tap “email me a code instead” below.' : ((si && si.message) || "Couldn't sign in.")); return; }
+        var em = si.email || email;
+        finishSignedIn(em);
+        maybeOfferBiometric(em, pass);   // offer Face ID for next time
+      });
+    }
+
+    function finishSignedIn(email){
+      rememberEmail(email);   // remember this account for fast re-sign-in next time
+      setHugAccountState('active', email);
+      refreshReferralCodeFromServer();
+      refreshReferralBalanceFromServer();
+      if (typeof refreshLinkedProductsFromServer === 'function') refreshLinkedProductsFromServer();
+      if (window.__hugPurchases) window.__hugPurchases.refresh();
+      close();
+      // Never leave the user on a stale transparent camera overlay, and move them
+      // off Settings (where sign-in is triggered) onto Home.
+      document.documentElement.classList.remove('scan-camera-active');
+      var activeScreenEl = document.querySelector('.screen.active');
+      if (window.__hugNav && activeScreenEl && activeScreenEl.dataset.screen === 'settings') window.__hugNav('home');
+      showToast('Signed in as ' + email);
+    }
+
+    window.__hugAuth = {
+      open: open,
+      // Forget a remembered account + its saved Face ID login (used on delete).
+      forgetAccount: function(email){
+        forgetEmail(email);
+        if(hasBio(email)){ setBioEmail(email, false); if(window.HugBackend && window.HugBackend.deleteBiometricCredentials) window.HugBackend.deleteBiometricCredentials(email); }
+      }
+    };
+  })();
+
+  // ----- Account controls injected into Settings (sign in / out / delete) -----
+  (function accountControls(){
+    var settings = document.querySelector('.screen[data-screen="settings"] .content.plain-content');
+    if(!settings) return;
+    var box = document.createElement('div');
+    box.className = 'account-controls';
+    settings.appendChild(box);
+
+    function row(cls, sym, label){
+      return '<button class="simple-row ' + cls + '" type="button"><span class="row-left">' +
+        '<svg class="row-svg" viewBox="0 0 64 64" aria-hidden="true"><use href="#' + sym + '"></use></svg>' +
+        label + '</span><span>›</span></button>';
+    }
+    async function onSignOut(){
+      var ok = await showConfirm({ title:'Sign out', body:'Sign out of your hug account?', confirm:'Sign out', cancel:'Cancel' });
+      if(!ok) return;
+      try { if(window.HugBackend && window.HugBackend.signOut) await window.HugBackend.signOut(); } catch(e){}
+      if(window.clearHugAccountState) window.clearHugAccountState();
+      showToast('Signed out.');
+    }
+    async function onDelete(){
+      var ok = await showConfirm({ title:'Delete account', body:"Permanently delete your account and data? This can't be undone.", confirm:'Delete', cancel:'Cancel' });
+      if(!ok) return;
+      var res = await (window.HugBackend && window.HugBackend.deleteAccount ? window.HugBackend.deleteAccount() : Promise.resolve({ ok:false }));
+      if(!res || !res.ok){ showToast("Couldn't delete the account. Try again."); return; }
+      try { if(window.__hugAuth && window.__hugAuth.forgetAccount && accountEmail) window.__hugAuth.forgetAccount(accountEmail); } catch(e){}
+      try { if(window.HugBackend && window.HugBackend.signOut) await window.HugBackend.signOut(); } catch(e){}
+      if(window.clearHugAccountState) window.clearHugAccountState();
+      showToast('Your account was deleted.');
+    }
+    async function onSignOutDemo(){
+      var ok = await showConfirm({ title:'Sign out', body:'Sign out of the prototype account?', confirm:'Sign out', cancel:'Cancel' });
+      if(!ok) return;
+      // Prototype "sign out" leaves the demo account -> fresh / signed-out state.
+      try { localStorage.setItem('hug-demo-mode', 'off'); } catch(e){}
+      location.reload();
+    }
+    function render(){
+      if(isDemoMode()){
+        // Prototype simulates a signed-in account: the only account action is sign out.
+        box.innerHTML = row('account-signout','i-signout','sign out');
+        box.querySelector('.account-signout').addEventListener('click', onSignOutDemo);
+        return;
+      }
+      var active = document.documentElement.dataset.accountStatus === 'active';
+      if(!active){
+        box.innerHTML = row('account-signin', 'i-key', 'sign in');
+        box.querySelector('.account-signin').addEventListener('click', function(){ if(window.__hugAuth) window.__hugAuth.open('signin'); });
+      } else {
+        box.innerHTML = row('account-setpass','i-key','set a password') + row('account-signout','i-signout','sign out') + row('account-delete','i-trash','delete account');
+        box.querySelector('.account-setpass').addEventListener('click', function(){ if(window.__hugAuth) window.__hugAuth.open('setpass'); });
+        box.querySelector('.account-signout').addEventListener('click', onSignOut);
+        box.querySelector('.account-delete').addEventListener('click', onDelete);
+      }
+    }
+    window.__hugAccountControls = { render: render };
     render();
   })();
 
-  // (18) gift-wrap fee (hoisted so updateCart can read it); maintained by giftWrapFeature
+  // ----- Hidden diagnostics screen (support / release debugging) -----
+  // Entry point: a small version line at the foot of Settings; tapping it 7×
+  // within ~1.6s opens a read-only panel of build info, plugin availability,
+  // permissions, the last result of each backend op, and the recent event log
+  // (all from HugDiag). A "copy for support" button puts it on the clipboard.
+  // No secrets/PII — HugDiag strips those before anything is stored.
+  (function diagnosticsFeature(){
+    var settings = document.querySelector('.screen[data-screen="settings"] .content.plain-content');
+    var build = window.__HUG_BUILD__ || {};
+    var foot = document.createElement('button');
+    foot.type = 'button';
+    foot.className = 'diag-version';
+    foot.textContent = 'hug ' + (build.version || '0.0.0') + (build.env && build.env !== 'production' ? ' · ' + build.env : '');
+    if (settings) settings.appendChild(foot);
+
+    var taps = 0, tapTimer = 0;
+    foot.addEventListener('click', function(){
+      taps++;
+      clearTimeout(tapTimer);
+      tapTimer = setTimeout(function(){ taps = 0; }, 1600);
+      if (taps >= 7) { taps = 0; open(); }
+    });
+
+    function ago(t){ if(!t) return ''; var s=Math.max(0,Math.round((Date.now()-t)/1000)); if(s<60) return s+'s ago'; var m=Math.round(s/60); if(m<60) return m+'m ago'; var h=Math.round(m/60); if(h<48) return h+'h ago'; return Math.round(h/24)+'d ago'; }
+    function esc(s){ return String(s==null?'':s).replace(/[&<>]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;'})[c]; }); }
+    function vstr(v){ return (typeof v==='object' && v!==null)?JSON.stringify(v):String(v); }
+
+    function buildText(snap, live){
+      var L=[];
+      L.push('hug diagnostics — '+new Date().toISOString());
+      L.push('version '+(snap.build.version||'?')+' (build '+((live.appInfo&&live.appInfo.build!=null)?live.appInfo.build:'?')+', id '+(snap.build.buildId||'?')+') · '+(snap.build.env||'?')+' · '+(live.mode||'?'));
+      L.push('built '+(snap.build.builtAt||'?'));
+      L.push('');
+      L.push('[device]');
+      L.push('platform: '+(live.platform||'?')+(live.native?' (native)':' (web)'));
+      L.push('camera: '+(live.cameraPermission||'?'));
+      L.push('biometric: '+(live.biometric&&live.biometric.available?('yes '+(live.biometric.type||'')):'no'));
+      L.push('auth: '+(live.auth&&live.auth.signedIn?('signed in '+(live.auth.userId||'')):'signed out'));
+      L.push('shop: '+(live.shop&&live.shop.configured?'configured':'unconfigured')+' '+((live.shop&&live.shop.domain)||''));
+      var pl=live.plugins||{}; L.push('plugins: '+Object.keys(pl).map(function(k){return k+'='+(pl[k]?'1':'0');}).join(' '));
+      L.push('supabase: '+(live.supabaseUrl||'?'));
+      L.push('');
+      L.push('[last results]');
+      var m=snap.marks||{}; Object.keys(m).forEach(function(k){ L.push(k+': '+vstr(m[k]&&m[k].v)+'  ('+ago(m[k].t)+')'); });
+      L.push('');
+      L.push('[recent events]');
+      (snap.events||[]).slice(-40).forEach(function(e){ L.push(new Date(e.t).toISOString().slice(11,19)+' '+e.ev+(e.d?(' '+JSON.stringify(e.d)):'')); });
+      return L.join('\n');
+    }
+
+    async function open(){
+      var snap = (window.HugDiag && window.HugDiag.snapshot) ? window.HugDiag.snapshot() : { build: build, marks:{}, events:[] };
+      var live = {};
+      try { if (window.HugDiag && window.HugDiag.live) live = await window.HugDiag.live(); } catch(e){ live = {}; }
+      var pl = live.plugins || {};
+      var m = snap.marks || {};
+      var markRows = Object.keys(m).map(function(k){
+        return '<div class="diag-row"><span class="diag-k">'+esc(k)+'</span><span class="diag-v">'+esc(vstr(m[k]&&m[k].v))+'</span><span class="diag-t">'+esc(ago(m[k].t))+'</span></div>';
+      }).join('') || '<div class="diag-empty">no operations yet</div>';
+      var evRows = (snap.events||[]).slice(-40).reverse().map(function(e){
+        return '<div class="diag-ev"><span class="diag-t">'+esc(new Date(e.t).toISOString().slice(11,19))+'</span> <span class="diag-evn">'+esc(e.ev)+'</span>'+(e.d?(' <span class="diag-evd">'+esc(JSON.stringify(e.d))+'</span>'):'')+'</div>';
+      }).join('') || '<div class="diag-empty">no events yet</div>';
+      var ov = document.createElement('div');
+      ov.className = 'diag-overlay';
+      ov.innerHTML =
+        '<div class="diag-card" role="dialog" aria-modal="true" aria-label="Diagnostics">'+
+          '<div class="diag-head"><span class="diag-title">diagnostics</span><button type="button" class="diag-close" aria-label="Close">✕</button></div>'+
+          '<div class="diag-scroll">'+
+            '<div class="diag-sec">build</div>'+
+            '<div class="diag-row"><span class="diag-k">version</span><span class="diag-v">'+esc((snap.build.version||'?')+' · '+(snap.build.env||'?'))+'</span></div>'+
+            '<div class="diag-row"><span class="diag-k">build no.</span><span class="diag-v">'+esc((live.appInfo&&live.appInfo.build!=null)?live.appInfo.build:'? (web)')+'</span></div>'+
+            '<div class="diag-row"><span class="diag-k">build id</span><span class="diag-v">'+esc(snap.build.buildId||'?')+'</span></div>'+
+            '<div class="diag-row"><span class="diag-k">built</span><span class="diag-v">'+esc((snap.build.builtAt||'').replace('T',' ').slice(0,19))+'</span></div>'+
+            '<div class="diag-row"><span class="diag-k">mode</span><span class="diag-v">'+esc(live.mode||'?')+'</span></div>'+
+            '<div class="diag-sec">device</div>'+
+            '<div class="diag-row"><span class="diag-k">platform</span><span class="diag-v">'+esc((live.platform||'?')+(live.native?' · native':' · web'))+'</span></div>'+
+            '<div class="diag-row"><span class="diag-k">camera</span><span class="diag-v">'+esc(live.cameraPermission||'?')+'</span></div>'+
+            '<div class="diag-row"><span class="diag-k">biometric</span><span class="diag-v">'+esc(live.biometric&&live.biometric.available?('yes '+(live.biometric.type||'')):'no')+'</span></div>'+
+            '<div class="diag-row"><span class="diag-k">auth</span><span class="diag-v">'+esc(live.auth&&live.auth.signedIn?('signed in '+(live.auth.userId||'')):'signed out')+'</span></div>'+
+            '<div class="diag-row"><span class="diag-k">shop</span><span class="diag-v">'+esc(live.shop&&live.shop.configured?'configured':'unconfigured')+'</span></div>'+
+            '<div class="diag-row"><span class="diag-k">plugins</span><span class="diag-v">'+esc(Object.keys(pl).map(function(k){return k+(pl[k]?' ✓':' ✕');}).join('   '))+'</span></div>'+
+            '<div class="diag-sec">last results</div>'+ markRows +
+            '<div class="diag-sec">recent events</div>'+ evRows +
+          '</div>'+
+          '<div class="diag-actions"><button type="button" class="diag-copy">copy for support</button></div>'+
+        '</div>';
+      function close(){ ov.classList.remove('show'); setTimeout(function(){ ov.remove(); }, 200); }
+      ov.querySelector('.diag-close').addEventListener('click', close);
+      ov.addEventListener('click', function(e){ if(e.target===ov) close(); });
+      ov.querySelector('.diag-copy').addEventListener('click', async function(){
+        var txt = buildText(snap, live), ok = false, b = this;
+        try { await navigator.clipboard.writeText(txt); ok = true; } catch(e){}
+        if(!ok){ try { var ta=document.createElement('textarea'); ta.value=txt; ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); ok=true; } catch(e){} }
+        b.textContent = ok ? 'copied ✓' : 'copy failed';
+        setTimeout(function(){ b.textContent = 'copy for support'; }, 1600);
+      });
+      document.body.appendChild(ov);
+      requestAnimationFrame(function(){ ov.classList.add('show'); });
+    }
+
+    window.__hugDiagnostics = { open: open };
+  })();
+
+  // ----- Help & support: categorised recovery flows + email with diagnostics -----
+  // A Settings entry that opens a list of the things that actually go wrong, each
+  // with self-serve guidance and an "email support" action that pre-fills a mail
+  // to hey@thehuggable.co including a compact, PII-free diagnostics summary (from
+  // HugDiag) so support can help without a back-and-forth.
+  (function supportFeature(){
+    var SUPPORT_EMAIL = 'hey@thehuggable.co';
+    var ISSUES = [
+      { q: "I scanned but nothing happened", a: "Hold the phone steady in good light so the whole QR is in frame — the app retries automatically on a weak signal. If it still won't read, your camera permission may be off (Settings on your phone › hug › Camera)." },
+      { q: "My cup says it's already claimed", a: "If it's your cup, it's already linked to your account — you're all set. If you bought it second-hand or it's showing under someone else, email us and we'll transfer it." },
+      { q: "I changed phone", a: "Sign in with your email + password (or Face ID once re-enabled) on the new phone — your cups, referral code and cashback all follow your account, nothing is stored only on the device." },
+      { q: "I can't access my email", a: "Your account is tied to your email, so reach out and we'll help you recover access or move you to a new address." },
+      { q: "Face ID stopped working", a: "Re-enable it from the account screen, or just sign in with your password — Face ID is only a shortcut, never the only way in." },
+      { q: "My cashback is missing", a: "New cashback is 'pending' until the referred order matures, then becomes 'available'. Check the cashback screen first; if a confirmed referral never showed up, email us." },
+      { q: "My friend used my link but I wasn't credited", a: "Credit lands once their order completes and clears the return window. If it's been a while, email us their order number and we'll check." },
+      { q: "Checkout wouldn't open", a: "This is usually a store-side setup, not your phone — try again shortly. If it keeps happening, email us and the diagnostics will tell us exactly where it stopped." },
+      { q: "My gift card didn't save", a: "Re-open the card in your bag and tap done again — the upload retries on a blip. If it still won't save, email us." },
+      { q: "I want to return or unlink a cup", a: "Unlink a cup yourself from your cups list. For a return or refund, email us and we'll sort it." }
+    ];
+
+    function esc(s){ return String(s==null?'':s).replace(/[&<>]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;'})[c]; }); }
+
+    async function compactDiag(){
+      var s = (window.HugDiag && window.HugDiag.snapshot) ? window.HugDiag.snapshot() : { build:{}, marks:{} };
+      var live = {}; try { if (window.HugDiag && window.HugDiag.live) live = await window.HugDiag.live(); } catch(e){}
+      var m = s.marks || {}, L = [];
+      L.push('app ' + (s.build.version||'?') + ' (' + (s.build.buildId||'?') + ') ' + (s.build.env||''));
+      L.push('device ' + (live.platform||'?') + (live.native?' native':''));
+      L.push('user ' + (live.auth && live.auth.signedIn ? (live.auth.userId||'signed-in') : 'signed-out'));
+      ['qr_resolve','claim','cart_create','checkout_url_host','checkout_cart_ref','checkout_opened_at','checkout_handoff','checkout_result','cashout'].forEach(function(k){
+        if (m[k]) L.push(k + '=' + (typeof m[k].v==='object'?JSON.stringify(m[k].v):m[k].v));
+      });
+      return L.join('\n');
+    }
+    async function emailSupport(issue){
+      var diag = await compactDiag();
+      var subj = encodeURIComponent('[hug support] ' + issue);
+      var body = encodeURIComponent('Issue: ' + issue + '\n\n[Tell us what happened here]\n\n--- diagnostics (helps us help you, no personal data) ---\n' + diag + '\n');
+      var url = 'mailto:' + SUPPORT_EMAIL + '?subject=' + subj + '&body=' + body;
+      if (window.HugDiag) window.HugDiag.log('support:email', { issue: issue.slice(0, 40) });
+      try { window.location.href = url; } catch(e){}
+    }
+
+    function open(){
+      var ov = document.createElement('div');
+      ov.className = 'help-overlay';
+      var items = ISSUES.map(function(it, i){
+        return '<div class="help-item" data-i="' + i + '">' +
+          '<button type="button" class="help-q">' + esc(it.q) + '<span class="help-chev">›</span></button>' +
+          '<div class="help-a"><p>' + esc(it.a) + '</p><button type="button" class="help-email">email support</button></div>' +
+        '</div>';
+      }).join('');
+      ov.innerHTML =
+        '<div class="help-card" role="dialog" aria-modal="true" aria-label="Help and support">' +
+          '<div class="help-head"><span class="help-title">help &amp; support</span><button type="button" class="help-close" aria-label="Close">✕</button></div>' +
+          '<div class="help-scroll">' + items +
+            '<button type="button" class="help-email help-email--general">email us about something else</button>' +
+          '</div>' +
+        '</div>';
+      function close(){ ov.classList.remove('show'); setTimeout(function(){ ov.remove(); }, 200); }
+      ov.querySelector('.help-close').addEventListener('click', close);
+      ov.addEventListener('click', function(e){ if(e.target===ov) close(); });
+      ov.querySelectorAll('.help-q').forEach(function(btn){
+        btn.addEventListener('click', function(){ this.closest('.help-item').classList.toggle('open'); });
+      });
+      ov.querySelectorAll('.help-item').forEach(function(item){
+        var i = Number(item.getAttribute('data-i'));
+        item.querySelector('.help-email').addEventListener('click', function(){ emailSupport(ISSUES[i].q); });
+      });
+      ov.querySelector('.help-email--general').addEventListener('click', function(){ emailSupport('Something else'); });
+      document.body.appendChild(ov);
+      requestAnimationFrame(function(){ ov.classList.add('show'); });
+    }
+
+    // Settings entry.
+    var settings = document.querySelector('.screen[data-screen="settings"] .content.plain-content');
+    if (settings) {
+      var row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'simple-row help-row';
+      row.innerHTML = '<span class="row-left"><svg class="row-svg" viewBox="0 0 64 64" aria-hidden="true"><use href="#i-email"></use></svg>help &amp; support</span><span>›</span>';
+      settings.appendChild(row);
+      row.addEventListener('click', open);
+    }
+    window.__hugSupport = { open: open };
+  })();
+
+  // ----- Offline banner: slides in on hug:offline, out on hug:online (HugNet) -----
+  (function offlineBanner(){
+    var bar = document.createElement('div');
+    bar.className = 'net-banner';
+    bar.setAttribute('role', 'status');
+    bar.textContent = "You're offline — some things may not work";
+    document.body.appendChild(bar);
+    function set(off){ document.documentElement.classList.toggle('is-offline', !!off); }
+    window.addEventListener('hug:offline', function(){ set(true); });
+    window.addEventListener('hug:online', function(){ set(false); });
+    try { if (window.HugNet && !window.HugNet.isOnline()) set(true); } catch(e){}
+  })();
+
+  // ----- Prototype data: linked products + referral code/QR (demo only) -----
+  (function demoDataFeature(){
+    if(!isDemoMode()) return;
+    // Present the prototype as a fully signed-in, ACTIVE account. Display-only:
+    // not persisted, and syncAccountFromBackend() no-ops in demo, so nothing
+    // overwrites it.
+    accountStatus = "active";
+    accountEmail = DEMO.email;
+    document.documentElement.dataset.accountStatus = "active";
+    referralCode = DEMO.referralCode;
+    referralAvailableCents = DEMO.availableCents;
+    referralPendingCents = DEMO.pendingCents;
+    linkedProducts = DEMO.linkedCodes
+      .filter(function(c){ return HUG_PRODUCT_CATALOG[c]; })
+      .map(function(c){
+        return {
+          productCode: c,
+          productName: HUG_PRODUCT_CATALOG[c].productName,
+          colourName: HUG_PRODUCT_CATALOG[c].colourName,
+          linkedAt: ""
+        };
+      });
+    var nameEl = document.querySelector('.screen[data-screen="profile"] .profile-name');
+    if(nameEl) nameEl.textContent = DEMO.name;
+    var form = document.querySelector('.screen[data-screen="profile"] .addr-form');
+    if(form){
+      Object.keys(DEMO.address).forEach(function(k){
+        var el = form.querySelector('[name="' + k + '"]');
+        if(el) el.value = DEMO.address[k];
+      });
+    }
+    prefillCheckoutAddress();
+    renderLinkedProducts();
+    renderHugAccountState();
+  })();
+
+  // ----- Home "ECO POINTS" = your combined eco points (25/linked mug + 5/referral),
+  // read from the leaderboard's is_me row (0 until you have any). -----
+  (function pointsFeature(){
+    var el = document.querySelector('.points-block .points');
+    if(!el) return;
+    function set(v){ el.textContent = String(v); }
+    function load(){
+      if(isDemoMode()){ set(DEMO.points); return; }
+      if(document.documentElement.dataset.accountStatus !== 'active' || !(window.HugBackend && window.HugBackend.enabled)){ set(0); return; }
+      window.HugBackend.getLeaderboard().then(function(res){
+        var me = (res && res.ok && Array.isArray(res.rows)) ? res.rows.filter(function(r){ return r.is_me; })[0] : null;
+        set(me ? (Number(me.eco_points) || 0) : 0);
+      }).catch(function(){ set(0); });
+    }
+    window.__hugPoints = { load: load };
+    load();
+  })();
+
+  // (Prototype-mode toggle removed — the app runs on real accounts only.)
+
+  // (19) card designer — live message + font-style picker (plain / handwritten / retro / ransom).
+  (function cardEditorFeature(){
+    // ---- shared ransom renderer (also drives the checkout thumbnails) ----
+    var RF = ["'Anton',sans-serif", "'Abril Fatface',serif", "'Playfair Display',serif", "'Special Elite',cursive", "'Bungee',cursive", "'Oswald',sans-serif", "'Archivo Black',sans-serif", "'Bebas Neue',sans-serif", "Georgia,serif", "'Courier New',monospace"];
+    var RP = [['#fff','#0a0a0a'], ['#fff','#0a0a0a'], ['#0a0a0a','#fff'], ['#f3f0e7','#0a0a0a'], ['#ffe14d','#0a0a0a'], ['#eb3d7f','#fff']];
+    function rpick(a){ return a[(Math.random()*a.length)|0]; }
+    function resc(s){ return String(s).replace(/[&<>"]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); }
+    function rletter(ch){ var p=rpick(RP); return '<span class="ransom-ch" style="font-family:'+rpick(RF)+';background:'+p[0]+';color:'+p[1]+';transform:rotate('+(Math.random()*26-13).toFixed(1)+'deg);font-size:'+(0.85+Math.random()*0.6).toFixed(2)+'em;">'+resc(ch)+'</span>'; }
+    function ransom(t){ var o='', word=''; function flush(){ if(word){ o+='<span class="ransom-word">'+word+'</span>'; word=''; } } t=String(t); for (var i=0;i<t.length;i++){ var ch=t[i]; if (ch==='\n'){ flush(); o+='<span style="flex-basis:100%;height:.32em"></span>'; continue; } if (ch===' '){ flush(); continue; } word+=rletter(ch); } flush(); return o; }
+    window.__hugCardRender = function(el, stl, text){
+      if(!el) return;
+      el.className = 'card-msg style-' + stl;
+      var t = (text && text.length) ? text : ' ';
+      if (stl === 'ransom') el.innerHTML = ransom(t); else el.textContent = t;
+    };
+
+    // ---- 16 stickers (same art as the website card designer) ----
+    var STK = [
+      '<svg viewBox="0 0 100 100"><path d="M50 86 18 54a20 20 0 0 1 28-28l4 4 4-4a20 20 0 0 1 28 28z" fill="#e8476b"/></svg>',
+      '<svg viewBox="0 0 100 100"><g fill="#f48fb1"><circle cx="50" cy="26" r="15"/><circle cx="74" cy="50" r="15"/><circle cx="50" cy="74" r="15"/><circle cx="26" cy="50" r="15"/></g><circle cx="50" cy="50" r="13" fill="#ffd54f"/></svg>',
+      '<svg viewBox="0 0 100 100"><path d="M50 8 61 38 93 38 67 58 77 90 50 70 23 90 33 58 7 38 39 38z" fill="#ffca28"/></svg>',
+      '<svg viewBox="0 0 100 100"><path d="M50 10c4 24 16 36 40 40-24 4-36 16-40 40-4-24-16-36-40-40 24-4 36-16 40-40z" fill="#ffd54f"/></svg>',
+      '<svg viewBox="0 0 100 100"><g stroke="#ffb300" stroke-width="6" stroke-linecap="round"><path d="M50 8v12M50 80v12M8 50h12M80 50h12M22 22l9 9M69 69l9 9M78 22l-9 9M31 69l-9 9"/></g><circle cx="50" cy="50" r="20" fill="#ffca28"/></svg>',
+      '<svg viewBox="0 0 100 100" fill="none" stroke-width="9"><path d="M14 78a36 36 0 0 1 72 0" stroke="#e8476b"/><path d="M25 78a25 25 0 0 1 50 0" stroke="#ffca28"/><path d="M36 78a14 14 0 0 1 28 0" stroke="#42a5f5"/></svg>',
+      '<svg viewBox="0 0 100 100"><path d="M30 70a18 18 0 0 1 0-36 22 22 0 0 1 42 6 16 16 0 0 1-2 30z" fill="#90caf9"/></svg>',
+      '<svg viewBox="0 0 100 100"><ellipse cx="50" cy="40" rx="26" ry="32" fill="#7e57c2"/><path d="M50 72v20" stroke="#9e9e9e" stroke-width="3"/><path d="M45 72h10l-5 7z" fill="#7e57c2"/></svg>',
+      '<svg viewBox="0 0 100 100"><path d="M78 22C40 22 22 48 22 78c30 0 56-18 56-56z" fill="#66bb6a"/><path d="M30 70 70 30" stroke="#2e7d32" stroke-width="4"/></svg>',
+      '<svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" fill="#ffd54f"/><circle cx="38" cy="42" r="5" fill="#5d4037"/><circle cx="62" cy="42" r="5" fill="#5d4037"/><path d="M34 60a18 18 0 0 0 32 0" stroke="#5d4037" stroke-width="5" fill="none" stroke-linecap="round"/></svg>',
+      '<svg viewBox="0 0 100 100" fill="#8d6e63"><ellipse cx="50" cy="65" rx="20" ry="16"/><circle cx="30" cy="46" r="8"/><circle cx="44" cy="35" r="8"/><circle cx="56" cy="35" r="8"/><circle cx="70" cy="46" r="8"/></svg>',
+      '<svg viewBox="0 0 100 100" fill="#42a5f5"><path d="M40 26 76 18v40a12 10 0 1 1-8-9V34l-20 4v30a12 10 0 1 1-8-9z"/></svg>',
+      '<svg viewBox="0 0 100 100"><path d="M56 6 24 56h20l-8 38 36-54H50z" fill="#ffca28"/></svg>',
+      '<svg viewBox="0 0 100 100"><path d="M18 72 12 34l22 16 16-28 16 28 22-16-6 38z" fill="#ffca28"/><rect x="18" y="72" width="64" height="10" rx="3" fill="#ffb300"/></svg>',
+      '<svg viewBox="0 0 100 100"><g fill="#ab47bc"><path d="M50 50C40 24 14 22 18 44c-3 22 26 18 32 6z"/><path d="M50 50C60 24 86 22 82 44c3 22-26 18-32 6z"/><path d="M50 52C42 64 20 70 26 84c10 10 24-12 24-24z"/><path d="M50 52C58 64 80 70 74 84c-10 10-24-12-24-24z"/></g><rect x="48" y="34" width="4" height="36" rx="2" fill="#4a148c"/></svg>',
+      '<svg viewBox="0 0 100 100"><path d="M24 38h44v20a18 18 0 0 1-36 0z" fill="#8d6e63"/><path d="M68 42h8a10 10 0 0 1 0 20h-8" fill="none" stroke="#8d6e63" stroke-width="6"/><path d="M36 24c-4 4 4 6 0 10M50 22c-4 4 4 6 0 10" stroke="#bcaaa4" stroke-width="4" fill="none" stroke-linecap="round"/></svg>'
+    ];
+    var DESIGN_NAMES = ['Linen','Bloom','Sage','Confetti'];
+    var FIT_START = { plain:16, hand:22, arcade:10, ransom:16 };   // start small — the width/height sliders + size grow it
+    var PHOTO_B = { smin:0.5, smax:1.7, base:52, top:32 };
+    var STK_B   = { smin:0.5, smax:2.6, base:22, top:52 };
+    var TEXT_B  = { smin:0.55, smax:1.6 };
+
+    var card = document.getElementById('ce-card');
+    var msgEl = document.getElementById('ce-msg');
+    var stickerBox = document.getElementById('ce-stickers');
+    var photoBtn = document.getElementById('ce-photo-btn'), photoInput = document.getElementById('ce-photo-input');
+    var ctlPanel = document.getElementById('ce-layerctl'), sizeSlider = document.getElementById('ce-size');
+    var rotSlider = document.getElementById('ce-rot'), rotRow = document.getElementById('ce-rotrow'), removeBtn = document.getElementById('ce-remove');
+    var designsBox = document.getElementById('ce-designs'), fontsBox = document.getElementById('ce-fonts'), doneBtn = document.getElementById('ce-done');
+    if(!card || !msgEl) return;   // (the ransom renderer above is still exported)
+
+    var curKey = null, design = 0, font = 'plain', msgScale = 1, msgW = 84, msgH = 0.86, msgX = 50, msgY = 50, curRaw = '', msgFocused = false, msgEditing = false;
+    var widthSlider = document.getElementById('ce-width'), widthRow = document.getElementById('ce-widthrow');
+    var heightSlider = document.getElementById('ce-height'), heightRow = document.getElementById('ce-heightrow');
+    var layers = [], selLayer = null;   // photo + sticker layers; selLayer may be 'msg'
+
+    // ---- message (types directly on the white card) ----
+    function fitMsg(){
+      if(!card.clientHeight) return;
+      // WIDTH = the user's wrap width (text reflows inside it). HEIGHT = the area
+      // the text is allowed to fill — the font shrinks UNIFORMLY to fit, starting
+      // from the style's preferred size. So changing either dimension reflows /
+      // re-fits the text without ever stretching (distorting) the glyphs.
+      msgEl.style.width = msgW + '%';
+      var avH = card.clientHeight * msgH;
+      var size = FIT_START[font] || 24, min = 9, guard = 60;
+      msgEl.style.fontSize = size + 'px';
+      while(guard-- > 0 && size > min && msgEl.scrollHeight > avH){ size--; msgEl.style.fontSize = size + 'px'; }
+    }
+    function applyMsgPos(){ msgEl.style.left = msgX + '%'; msgEl.style.top = msgY + '%'; }
+    function setMsgDisplay(){
+      var empty = !curRaw.trim();
+      msgEl.className = 'ce-msg card-msg style-' + font + (empty ? ' ce-empty' : '') + (selLayer === 'msg' ? ' sel' : '');
+      if(empty) msgEl.textContent = '';
+      else if(font === 'ransom' && !msgFocused) msgEl.innerHTML = ransom(curRaw);
+      else msgEl.textContent = curRaw;
+      msgEl.style.setProperty('--ms', msgScale);
+      fitMsg();
+      applyMsgPos();
+    }
+    // The message behaves like the photo/sticker layers: tap to SELECT (the chosen
+    // font — including ransom — stays on screen, and you can drag it / resize it),
+    // tap AGAIN (or tap an empty message) to EDIT the words. Edit is the only mode
+    // that drops to plain text + raises the keyboard; on blur it re-renders the font.
+    // The element is NOT contenteditable until edit mode, so a tap/drag to reposition
+    // never strips the ransom styling.
+    function placeMsgCaretEnd(){ try{ var r=document.createRange(); r.selectNodeContents(msgEl); r.collapse(false); var s=window.getSelection(); s.removeAllRanges(); s.addRange(r); }catch(e){} }
+    function enterMsgEdit(){
+      if(msgEditing) return;
+      msgEditing = true; msgFocused = true;
+      selectLayer('msg');
+      msgEl.setAttribute('contenteditable', 'true');
+      if(font === 'ransom') msgEl.textContent = curRaw;   // plain so the words can be typed
+      try{ msgEl.focus(); }catch(e){}
+      placeMsgCaretEnd();
+    }
+    function exitMsgEdit(){
+      if(!msgEditing) return;
+      msgEditing = false; msgFocused = false;
+      msgEl.removeAttribute('contenteditable');
+      setMsgDisplay();   // re-render the chosen font (ransom etc.)
+    }
+    msgEl.addEventListener('input', function(){ curRaw = msgEl.innerText.replace(/\n$/, ''); msgEl.classList.toggle('ce-empty', !curRaw.trim()); fitMsg(); });
+    msgEl.addEventListener('blur', function(){ if(msgEditing) exitMsgEdit(); });
+
+    // Drag-to-move + tap-to-select/edit (distinguished by a small movement threshold).
+    var msx = null, msy, mslx, msly, mrect, msgMoved = false, msgWasSel = false;
+    msgEl.addEventListener('pointerdown', function(e){
+      if(msgEditing) return;                 // already editing → let the caret/keyboard work
+      e.stopPropagation();
+      msgWasSel = (selLayer === 'msg');
+      selectLayer('msg');
+      mrect = card.getBoundingClientRect();
+      msx = e.clientX; msy = e.clientY; mslx = msgX; msly = msgY; msgMoved = false;
+      try{ msgEl.setPointerCapture(e.pointerId); }catch(er){}
+    });
+    msgEl.addEventListener('pointermove', function(e){
+      if(msx == null || msgEditing) return;
+      if(!msgMoved && (Math.abs(e.clientX - msx) + Math.abs(e.clientY - msy)) < 6) return;
+      msgMoved = true; msgEl.classList.add('dragging');
+      var dx=(e.clientX-msx)/mrect.width*100, dy=(e.clientY-msy)/mrect.height*100;
+      msgX = Math.max(8, Math.min(92, mslx + dx));
+      msgY = Math.max(8, Math.min(92, msly + dy));
+      applyMsgPos();
+    });
+    function msgPointerEnd(e){
+      if(msx == null) return;
+      msx = null; msgEl.classList.remove('dragging');
+      try{ msgEl.releasePointerCapture(e.pointerId); }catch(er){}
+      if(msgMoved) return;                                  // it was a drag, not a tap
+      if(!curRaw.trim() || msgWasSel) enterMsgEdit();       // empty → edit now; else 2nd tap edits
+    }
+    msgEl.addEventListener('pointerup', msgPointerEnd);
+    msgEl.addEventListener('pointercancel', function(){ if(msx != null){ msx = null; msgEl.classList.remove('dragging'); } });
+
+    // ---- photo + sticker layers ----
+    function applyLayer(l){ l.el.style.left = l.x + '%'; l.el.style.top = l.y + '%'; l.el.style.transform = 'translate(-50%,-50%) rotate(' + l.rot + 'deg) scale(' + l.scale + ')'; l.el.style.setProperty('--ls', l.scale); }
+    function deselectAll(){ selLayer = null; layers.forEach(function(x){ x.el.classList.remove('sel'); }); msgEl.classList.remove('sel'); if(ctlPanel) ctlPanel.hidden = true; }
+    function selectLayer(l){
+      selLayer = l;
+      layers.forEach(function(x){ x.el.classList.toggle('sel', x === l); });
+      msgEl.classList.toggle('sel', l === 'msg');
+      if(!l){ if(ctlPanel) ctlPanel.hidden = true; return; }
+      if(ctlPanel) ctlPanel.hidden = false;
+      var isText = l === 'msg';
+      var b = isText ? TEXT_B : (l.type === 'photo' ? PHOTO_B : STK_B);
+      if(sizeSlider){ sizeSlider.min = Math.round(b.smin*100); sizeSlider.max = Math.round(b.smax*100); sizeSlider.value = Math.round((isText ? msgScale : l.scale)*100); }
+      // Width + height sliders are text-only (they reshape the message box).
+      if(widthRow) widthRow.style.display = isText ? '' : 'none';
+      if(heightRow) heightRow.style.display = isText ? '' : 'none';
+      if(isText){ if(widthSlider) widthSlider.value = Math.round(msgW); if(heightSlider) heightSlider.value = Math.round(msgH*100); }
+      if(rotRow) rotRow.style.display = isText ? 'none' : '';
+      if(rotSlider && !isText){ rotSlider.min = -180; rotSlider.max = 180; rotSlider.value = Math.round(l.rot); }
+      if(removeBtn) removeBtn.style.display = isText ? 'none' : '';
+    }
+    function removeLayer(l){ if(!l || l === 'msg') return; l.el.remove(); layers = layers.filter(function(x){ return x !== l; }); if(selLayer === l) deselectAll(); }
+    function wireDrag(l){
+      var sx = null, sy, slx, sly, rect;
+      l.el.addEventListener('pointerdown', function(e){ selectLayer(l); rect = card.getBoundingClientRect(); sx = e.clientX; sy = e.clientY; slx = l.x; sly = l.y; l.el.classList.add('dragging'); try{ l.el.setPointerCapture(e.pointerId); }catch(er){} e.preventDefault(); e.stopPropagation(); });
+      l.el.addEventListener('pointermove', function(e){ if(sx == null) return; var dx=(e.clientX-sx)/rect.width*100, dy=(e.clientY-sy)/rect.height*100; l.x=Math.max(3,Math.min(97,slx+dx)); l.y=Math.max(3,Math.min(97,sly+dy)); applyLayer(l); });
+      function end(){ sx = null; l.el.classList.remove('dragging'); }
+      l.el.addEventListener('pointerup', end); l.el.addEventListener('pointercancel', end);
+    }
+    function addLayer(type, child, init){
+      var b = type === 'photo' ? PHOTO_B : STK_B;
+      var el = document.createElement('div'); el.className = 'ce-layer ' + type; el.style.width = b.base + '%'; el.appendChild(child);
+      var l = { type: type, el: el, x: (init&&init.x!=null?init.x:50), y: (init&&init.y!=null?init.y:b.top), scale: (init&&init.scale!=null?init.scale:1), rot: (init&&init.rot!=null?init.rot:0) };
+      var xb = document.createElement('button'); xb.type='button'; xb.className='ce-layer-x'; xb.setAttribute('aria-label','Remove'); xb.textContent='×';
+      xb.addEventListener('pointerdown', function(e){ e.stopPropagation(); });
+      xb.addEventListener('click', function(e){ e.stopPropagation(); e.preventDefault(); removeLayer(l); });
+      el.appendChild(xb); card.appendChild(el);
+      layers.push(l); applyLayer(l); wireDrag(l); return l;
+    }
+    function addPhoto(src, init){
+      layers.filter(function(l){ return l.type==='photo'; }).forEach(removeLayer);
+      var img = document.createElement('img'); img.alt = '';
+      var l = addLayer('photo', img, init); l.src = src;
+      if(!init){ img.onload = function(){ var a=(img.naturalWidth&&img.naturalHeight)?(img.naturalWidth/img.naturalHeight):1; var pct=100*Math.sqrt(0.20*a*1.5); pct=Math.max(24,Math.min(82,pct)); l.el.style.width = pct+'%'; }; }
+      else if(init.width){ l.el.style.width = init.width; }
+      img.src = src;
+      selectLayer(l); return l;
+    }
+    function addSticker(idx, init){
+      var span = document.createElement('span'); span.innerHTML = STK[idx] || '';
+      var l = addLayer('sticker', span, init); l.idx = idx;
+      if(!init) selectLayer(l);
+      return l;
+    }
+
+    if(stickerBox && !stickerBox.childElementCount){ STK.forEach(function(svg, idx){ var b=document.createElement('button'); b.type='button'; b.className='ce-stk'; b.setAttribute('aria-label','Add sticker'); b.innerHTML=svg; b.addEventListener('click', function(){ addSticker(idx); }); stickerBox.appendChild(b); }); }
+    if(photoBtn && photoInput){
+      photoBtn.addEventListener('click', function(){ photoInput.click(); });
+      photoInput.addEventListener('change', function(){ var f=photoInput.files&&photoInput.files[0]; if(!f) return; var rd=new FileReader(); rd.onload=function(){ addPhoto(rd.result); }; rd.readAsDataURL(f); photoInput.value=''; });
+    }
+    if(sizeSlider) sizeSlider.addEventListener('input', function(){ var v=Number(sizeSlider.value)/100; if(selLayer==='msg'){ msgScale=v; msgEl.style.setProperty('--ms', msgScale); } else if(selLayer){ selLayer.scale=v; applyLayer(selLayer); } });
+    // Text box width (wrap) + height (fit area): re-fit so the text reflows
+    // without distortion. Only meaningful while the message is selected.
+    if(widthSlider) widthSlider.addEventListener('input', function(){ if(selLayer!=='msg') return; msgW=Number(widthSlider.value); fitMsg(); });
+    if(heightSlider) heightSlider.addEventListener('input', function(){ if(selLayer!=='msg') return; msgH=Number(heightSlider.value)/100; fitMsg(); });
+    if(rotSlider) rotSlider.addEventListener('input', function(){ if(selLayer && selLayer!=='msg'){ selLayer.rot=Number(rotSlider.value); applyLayer(selLayer); } });
+    if(removeBtn) removeBtn.addEventListener('click', function(){ removeLayer(selLayer); });
+    if(card) card.addEventListener('pointerdown', function(e){ if(e.target === card) deselectAll(); });
+    // Tap anywhere OFF the selected item (and off its size/rotate/remove controls)
+    // to deselect it — clears the × + dashed outline so the card previews cleanly.
+    var ceScreen = (card && card.closest) ? (card.closest('.screen') || document) : document;
+    ceScreen.addEventListener('pointerdown', function(e){
+      if(!selLayer) return;
+      var t = e.target;
+      if(t && t.closest && (t.closest('.ce-layer') || t.closest('#ce-msg') || t.closest('#ce-layerctl'))) return;
+      deselectAll();
+    });
+
+    // ---- design (outside cover) + font pickers ----
+    function setDesign(i){ design = i; if(designsBox) designsBox.querySelectorAll('.gift-card-opt').forEach(function(b){ b.classList.toggle('sel', Number(b.getAttribute('data-design'))===i); }); }
+    function setFont(k){ font = k; if(fontsBox) fontsBox.querySelectorAll('button').forEach(function(b){ b.classList.toggle('active', b.getAttribute('data-style')===k); }); setMsgDisplay(); }
+    if(designsBox) designsBox.addEventListener('click', function(e){ var b=e.target.closest('[data-design]'); if(b) setDesign(Number(b.getAttribute('data-design'))||0); });
+    if(fontsBox) fontsBox.addEventListener('click', function(e){ var b=e.target.closest('[data-style]'); if(b) setFont(b.getAttribute('data-style')||'plain'); });
+
+    // ---- open the editor for a unit, save back to the gift state ----
+    function giftState(){ return (typeof window.__hugGiftState === 'function') ? (window.__hugGiftState() || {}) : {}; }
+    function open(key){
+      curKey = key;
+      var s = giftState()[key] || {};
+      design = (s.design != null) ? s.design : ((s.cardStyle != null) ? s.cardStyle : 0);
+      font = s.font || 'plain'; curRaw = s.message || ''; msgScale = s.msgScale || 1;
+      msgW = (s.msgW != null ? s.msgW : 84); msgH = (s.msgH != null ? s.msgH : 0.86);
+      msgX = (s.msgX != null ? s.msgX : 50); msgY = (s.msgY != null ? s.msgY : 50);
+      msgFocused = false; msgEditing = false; msgEl.removeAttribute('contenteditable');
+      layers.slice().forEach(function(l){ l.el.remove(); }); layers = [];
+      if(s.photo && s.photo.src) addPhoto(s.photo.src, s.photo);
+      (s.stickers || []).forEach(function(st){ addSticker(st.idx, st); });
+      deselectAll();
+      setDesign(design); setFont(font); setMsgDisplay();
+      if(window.__hugNav) window.__hugNav('card');
+      // Re-fit across the screen slide-in (the card grows to full size ~580ms).
+      requestAnimationFrame(function(){ setMsgDisplay(); });
+      setTimeout(function(){ fitMsg(); }, 380);
+      setTimeout(function(){ fitMsg(); }, 700);
+    }
+    window.__hugOpenCardEditor = open;
+
+    function serialize(s){
+      s.card = true; s.design = design; s.cardStyle = design; s.font = font;
+      s.message = curRaw.trim(); s.msgScale = msgScale; s.msgW = msgW; s.msgH = msgH; s.msgX = msgX; s.msgY = msgY;
+      var ph = layers.filter(function(l){ return l.type==='photo'; })[0];
+      s.photo = ph ? { src: ph.src, x: ph.x, y: ph.y, scale: ph.scale, rot: ph.rot, width: ph.el.style.width } : null;
+      s.stickers = layers.filter(function(l){ return l.type==='sticker'; }).map(function(l){ return { idx: l.idx, x: l.x, y: l.y, scale: l.scale, rot: l.rot }; });
+    }
+    function hasMedia(){ return layers.some(function(l){ return l.type==='photo' || l.type==='sticker'; }); }
+    function mediaSummary(){ var ph=0, st=0; layers.forEach(function(l){ if(l.type==='photo')ph++; else if(l.type==='sticker')st++; }); var bits=[]; if(ph)bits.push('photo'); if(st)bits.push(st+' sticker'+(st>1?'s':'')); if(curRaw.trim())bits.push('message'); return bits.join(' + '); }
+
+    // ---- compose the finished card to a PNG and upload (best-effort) ----
+    var H2C = null;
+    function loadH2C(){ if(H2C) return Promise.resolve(H2C); return new Promise(function(res){ var s=document.createElement('script'); s.src='https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js'; s.onload=function(){ H2C=window.html2canvas||null; res(H2C); }; s.onerror=function(){ res(null); }; document.head.appendChild(s); }); }
+    async function captureCard(){
+      var h = await loadH2C(); if(!h) return null;
+      try { if(document.fonts && document.fonts.ready) await document.fonts.ready; } catch(e){}
+      deselectAll();
+      var canvas; try { canvas = await h(card, { scale: 4, backgroundColor: '#ffffff', useCORS: true, logging: false }); } catch(e){ return null; }
+      var dataUrl; try { dataUrl = canvas.toDataURL('image/png'); } catch(e){ return null; }
+      if(!dataUrl) return null;
+      try {
+        var doFetch = function(){ return fetch('https://mfaysolymoacymfwcmik.supabase.co/functions/v1/card-art-upload', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ image: dataUrl }) }); };
+        // Retry a transient blip — the upload is best-effort but losing the art
+        // to a momentary drop is avoidable.
+        var r = (window.HugNet && window.HugNet.retryTransient) ? await window.HugNet.retryTransient(doFetch, { tries: 3, label: 'card-upload' }) : await doFetch();
+        var j = await r.json().catch(function(){ return null; });
+        if(!r.ok || !j || !j.ok){ console.warn('hug: card-art upload', (j&&j.error)||r.status); if(window.HugDiag) window.HugDiag.log('card_upload:fail', { status: r.status }); return null; }
+        return { url: j.url, path: j.path };
+      } catch(e){ console.warn('hug: card-art upload', e); if(window.HugDiag) window.HugDiag.err('card-upload', e); return null; }
+    }
+
+    async function done(){
+      if(!curKey){ if(window.__hugNav) window.__hugNav('checkout'); return; }
+      if(msgEditing) exitMsgEdit();   // re-render the chosen font before composing the image
+      var gw = giftState(); var s = gw[curKey] || (gw[curKey] = {});
+      serialize(s);
+      var label = doneBtn ? doneBtn.textContent : '';
+      if(hasMedia() || curRaw.trim()){
+        if(doneBtn){ doneBtn.disabled = true; doneBtn.textContent = 'saving card…'; }
+        try { var cap = await captureCard(); if(cap){ s.art = { url: cap.url, path: cap.path, summary: mediaSummary() }; } } catch(e){}
+        if(doneBtn){ doneBtn.disabled = false; doneBtn.textContent = label || 'done'; }
+      } else { s.card = false; s.art = null; }
+      if(window.__hugCardSaved) window.__hugCardSaved(curKey);
+      if(window.__hugNav) window.__hugNav('checkout');
+      if(window.__hugGiftReopen) window.__hugGiftReopen();
+    }
+    if(doneBtn) doneBtn.addEventListener('click', done);
+    window.addEventListener('resize', function(){ if(document.querySelector('.screen[data-screen="card"].active')) setMsgDisplay(); });
+
+    setMsgDisplay();
+  })();
+
+  // (18) gift-wrap + gift-card fees (hoisted so updateCart can read them); maintained by giftWrapFeature
   function giftWrapFee(){ return (window.__giftWrapFee || 0); }
+  function giftCardFee(){ return (window.__giftCardFee || 0); }
 
   (function giftWrapFeature(){
-    var toggle = document.getElementById('gift-wrap-toggle');
-    var row    = document.getElementById('gift-row');
-    var feeEl  = document.getElementById('gift-fee');
+    // Gift card + gift wrap are now TWO independent cart rows, each opening the
+    // shared panel in its own mode and showing its own running total.
+    var wrapToggle = document.getElementById('gift-wrap-toggle');
+    var cardToggle = document.getElementById('gift-card-toggle');
+    var wrapRow    = document.getElementById('giftwrap-row');
+    var cardRow    = document.getElementById('giftcard-row');
+    var wrapFeeEl  = document.getElementById('giftwrap-fee');
+    var cardFeeEl  = document.getElementById('giftcard-fee');
     var panel  = document.getElementById('giftwrap-panel');
-    if(!toggle || !panel) return;
+    if(!panel || (!wrapToggle && !cardToggle)) return;
     var unitsWrap = document.getElementById('gift-units');
     var doneBtn   = document.getElementById('gift-done');
     var backBtn   = document.getElementById('giftwrap-back');
+    var titleEl   = document.getElementById('giftwrap-title');
+    var introEl   = document.getElementById('gift-intro');
+    var mode = 'wrap';   // 'wrap' | 'card' — which option this panel is editing
     var PAPER_COUNT = 5;
     var gw = {};                 // per-SKU: gw[i] = { wrap, paper, card, message }
     window.__giftWrapFee = 0;
+    window.__giftCardFee = 0;
 
-    function st(i){ if(!gw[i]) gw[i] = { wrap:false, paper:0, card:false, cardStyle:0, message:'' }; return gw[i]; }
-    function cardsHtml(i){ var s=st(i), html=''; for(var c=0;c<4;c++){ html += '<button type="button" class="gift-card-opt gift-card-opt-'+c+(s.cardStyle===c?' sel':'')+'" data-cardstyle="'+c+'" aria-label="Card design '+(c+1)+'"></button>'; } return html; }
+    function st(i){ if(!gw[i]) gw[i] = { wrap:false, paper:0, card:false, cardStyle:0, font:'plain', message:'' }; return gw[i]; }
+    function cardsHtml(i){ var s=st(i), html=''; var NM=['Linen','Bloom','Sage','Confetti']; for(var c=0;c<4;c++){ html += '<button type="button" class="gift-card-opt gift-card-opt-'+c+(s.cardStyle===c?' sel':'')+'" data-cardstyle="'+c+'" aria-label="'+NM[c]+'"></button>'; } return html; }
+    // Font / "Card style" picker — Plain · Handwritten · Retro · Ransom (web parity).
+    var FONT_KEYS = ['plain','hand','arcade','ransom'];
+    var FONT_LABELS = ['Plain','Handwritten','Retro','Ransom'];
+    function fontsHtml(i){ var s=st(i), html=''; for(var f=0;f<4;f++){ html += '<button type="button" class="gift-font-opt'+((s.font||'plain')===FONT_KEYS[f]?' sel':'')+'" data-cardfont="'+FONT_KEYS[f]+'">'+FONT_LABELS[f]+'</button>'; } return html; }
+    // Render + auto-shrink a unit's live preview (start sizes match the web card).
+    var FIT_START = { plain:16, hand:22, arcade:10, ransom:16 };   // match the editor's start sizes (the composed image is the real card)
+    // Per-unit card summary: the composed card-art thumbnail (if designed) or a
+    // white mini-card with the message, plus a one-line summary + the open state.
+    function renderPreview(key){
+      if(!unitsWrap) return;
+      var sum = unitsWrap.querySelector('[data-cardsum="'+key+'"]');
+      var prev = unitsWrap.querySelector('[data-preview="'+key+'"]'); if(!prev) return;
+      var s = st(key);
+      if(sum) sum.classList.toggle('open', !!s.card);
+      if(s.art && s.art.url){
+        prev.className = 'gift-card-preview gcp-art';
+        prev.innerHTML = '<img src="' + s.art.url + '" alt="">';
+      } else {
+        prev.className = 'gift-card-preview gcp-white';
+        prev.innerHTML = '<span class="gcp-msg card-msg style-' + (s.font||'plain') + '"></span>';
+        var m = prev.querySelector('.gcp-msg');
+        if(window.__hugCardRender) window.__hugCardRender(m, s.font||'plain', s.message||'');
+        requestAnimationFrame(function(){
+          if(prev.clientHeight < 8) return;
+          var size = FIT_START[s.font||'plain'] || 16, guard = 64;
+          m.style.fontSize = size + 'px';
+          while(guard-- > 0 && size > 9 && m.scrollHeight > prev.clientHeight - 10){ size--; m.style.fontSize = size + 'px'; }
+        });
+      }
+      var txt = unitsWrap.querySelector('[data-cardtext="'+key+'"]');
+      if(txt){
+        var bits = [], msg = (s.message||'').trim();
+        if(msg) bits.push('“' + (msg.length>26 ? msg.slice(0,26)+'…' : msg) + '”');
+        if(s.photo) bits.push('photo');
+        var nst = (s.stickers||[]).length; if(nst) bits.push(nst + ' sticker' + (nst>1?'s':''));
+        txt.textContent = bits.length ? bits.join(' · ') : 'design your card';
+      }
+    }
+    function renderAllPreviews(){ if(!unitsWrap) return; unitsWrap.querySelectorAll('[data-preview]').forEach(function(p){ renderPreview(p.getAttribute('data-preview')); }); }
     function wrappedCount(){ var n=0; for(var i=0;i<bagVariantNames.length;i++){ var q=cartQty[i]; for(var u=1;u<=q;u++){ var k=i+'_'+u; if(gw[k]&&gw[k].wrap) n++; } } return n; }
+    // A card counts (and is charged \u00A34) when it actually has content.
+    function cardCount(){ var n=0; for(var i=0;i<bagVariantNames.length;i++){ var q=cartQty[i]; for(var u=1;u<=q;u++){ var k=i+'_'+u; var s=gw[k]; if(s && s.card && ((s.message&&s.message.trim()) || s.photo || (s.stickers&&s.stickers.length))) n++; } } return n; }
 
+    var GIFTWRAP_PRICE = 5, GIFTCARD_PRICE = 4;   // whole-pound add-ons
     function recompute(){
-      var n = wrappedCount(), on = n > 0;
-      window.__giftWrapFee = n * 3;
-      toggle.checked = on;
-      if(row) row.classList.toggle('selected', on);
-      if(feeEl) feeEl.textContent = '+\u00A3' + (on ? n*3 : 3).toFixed(2);
+      var nw = wrappedCount(), nc = cardCount();
+      window.__giftWrapFee = nw * GIFTWRAP_PRICE;
+      window.__giftCardFee = nc * GIFTCARD_PRICE;
+      // Each row shows its OWN running total (count \u00D7 price), or the base price
+      // when none are selected yet \u2014 so the numbers add up logically.
+      if(wrapToggle) wrapToggle.checked = nw > 0;
+      if(wrapRow) wrapRow.classList.toggle('selected', nw > 0);
+      if(wrapFeeEl) wrapFeeEl.textContent = '+\u00A3' + (nw > 0 ? nw*GIFTWRAP_PRICE : GIFTWRAP_PRICE).toFixed(0);
+      if(cardToggle) cardToggle.checked = nc > 0;
+      if(cardRow) cardRow.classList.toggle('selected', nc > 0);
+      if(cardFeeEl) cardFeeEl.textContent = '+\u00A3' + (nc > 0 ? nc*GIFTCARD_PRICE : GIFTCARD_PRICE).toFixed(0);
     }
     function refreshFee(){ recompute(); try{ updateCart(); }catch(e){} }
     window.__giftSync = function(){ if(panel && !panel.classList.contains('open')) build(); recompute(); };
+    // Per-unit gift state (gw["<colourIndex>_<unit>"] = {wrap,paper,cardStyle,message})
+    // for the Shopify checkout hand-off (buildShopifyLines reads this).
+    window.__hugGiftState = function(){ return gw; };
 
     function papersHtml(i){
       var s = st(i), html='';
@@ -4631,32 +6608,55 @@
           var key = i+'_'+u;
           var s = st(key);
           var label = 'hug o \u2014 '+bagVariantNames[i].toLowerCase()+(q>1 ? ' '+u : '');
-          html += '<div class="gift-unit'+(s.wrap?' wrapped':'')+'" data-u="'+key+'">'
-            + '<label class="gift-unit-head">'
-            +   '<span class="gift-check"><input type="checkbox" data-wrap="'+key+'"'+(s.wrap?' checked':'')+'><span class="gift-tick"></span></span>'
-            +   '<span class="gift-unit-name">'+label+'</span>'
-            + '</label>'
-            + '<div class="gift-unit-body">'
-            +   '<p class="gift-section-label">wrapping paper</p>'
-            +   '<div class="gift-papers" data-papers="'+key+'">'+papersHtml(key)+'</div>'
-            +   '<label class="gift-unit-card-row"><span class="gift-check"><input type="checkbox" data-card="'+key+'"'+(s.card?' checked':'')+'><span class="gift-tick"></span></span><span>add a gift card</span></label>'
-            +   '<div class="gift-card-panel'+(s.card?' open':'')+'" data-cardpanel="'+key+'"><p class="gift-section-label">card design</p><div class="gift-cards" data-cards="'+key+'">'+cardsHtml(key)+'</div><p class="gift-section-label">message</p><textarea data-msg="'+key+'" maxlength="200" placeholder="write your message\u2026">'+(s.message||'')+'</textarea></div>'
-            + '</div>'
-            + '</div>';
+          if(mode === 'card'){
+            html += '<div class="gift-unit'+(s.card?' wrapped':'')+'" data-u="'+key+'">'
+              + '<label class="gift-unit-head">'
+              +   '<span class="gift-check"><input type="checkbox" data-card="'+key+'"'+(s.card?' checked':'')+'><span class="gift-tick"></span></span>'
+              +   '<span class="gift-unit-name">'+label+'</span>'
+              +   '<span class="gift-price">+£4</span>'
+              + '</label>'
+              + '<div class="gift-card-summary'+(s.card?' open':'')+'" data-cardsum="'+key+'">'
+              +   '<div class="gift-card-preview" data-preview="'+key+'"></div>'
+              +   '<div class="gcs-meta"><span class="gcs-text" data-cardtext="'+key+'"></span><button type="button" class="gcs-edit" data-editcard="'+key+'">edit card</button></div>'
+              + '</div>'
+              + '</div>';
+          } else {
+            html += '<div class="gift-unit'+(s.wrap?' wrapped':'')+'" data-u="'+key+'">'
+              + '<label class="gift-unit-head">'
+              +   '<span class="gift-check"><input type="checkbox" data-wrap="'+key+'"'+(s.wrap?' checked':'')+'><span class="gift-tick"></span></span>'
+              +   '<span class="gift-unit-name">'+label+'</span>'
+              +   '<span class="gift-price">+£5</span>'
+              + '</label>'
+              + '<div class="gift-unit-body">'
+              +   '<p class="gift-section-label">wrapping paper</p>'
+              +   '<div class="gift-papers" data-papers="'+key+'">'+papersHtml(key)+'</div>'
+              + '</div>'
+              + '</div>';
+          }
         }
       }
       unitsWrap.innerHTML = html || '<p class="gift-empty">your bag is empty</p>';
     }
 
-    var firstOpen = true;
-    function openPanel(){
-      if(firstOpen && wrappedCount()===0){ for(var i=0;i<bagVariantNames.length;i++){ var q=cartQty[i]; for(var u=1;u<=q;u++){ st(i+'_'+u).wrap=true; } } }
-      firstOpen = false;
+    var firstWrapOpen = true;
+    function openPanel(m){
+      mode = (m === 'card') ? 'card' : 'wrap';
+      // Tapping "gift wrap" the first time wraps everything in the bag (clear
+      // intent); the card flow never auto-adds — cards must be designed.
+      if(mode === 'wrap' && firstWrapOpen && wrappedCount()===0){ for(var i=0;i<bagVariantNames.length;i++){ var q=cartQty[i]; for(var u=1;u<=q;u++){ st(i+'_'+u).wrap=true; } } }
+      if(mode === 'wrap') firstWrapOpen = false;
+      if(titleEl) titleEl.textContent = mode === 'card' ? 'GIFT CARD' : 'GIFT WRAP';
+      if(introEl) introEl.textContent = mode === 'card' ? 'add a card & message to each item — designed your way' : 'wrap items individually — pick a paper for each';
       build();
       recompute();
       panel.classList.add('open'); panel.setAttribute('aria-hidden','false');
+      renderAllPreviews();
     }
     function closePanel(){ panel.classList.remove('open'); panel.setAttribute('aria-hidden','true'); }
+
+    // Open the full-screen card designer for a unit; reopened (in card mode) on its "done".
+    function openEditor(key){ st(key).card = true; closePanel(); if(window.__hugOpenCardEditor) window.__hugOpenCardEditor(key); }
+    window.__hugGiftReopen = function(){ openPanel('card'); };
 
     if(unitsWrap){
       unitsWrap.addEventListener('change', function(e){
@@ -4665,19 +6665,14 @@
           var unit = w.closest('.gift-unit'); if(unit) unit.classList.toggle('wrapped', w.checked);
           refreshFee(); return; }
         var c = e.target.closest('input[data-card]');
-        if(c){ var ci=c.getAttribute('data-card'); st(ci).card = c.checked;
-          var cp = unitsWrap.querySelector('[data-cardpanel="'+ci+'"]');
-          if(cp){ cp.classList.toggle('open', c.checked);
-            if(c.checked){ var ta=cp.querySelector('textarea'); if(ta) setTimeout(function(){ ta.focus(); },280); } }
+        if(c){ var ci=c.getAttribute('data-card');
+          if(c.checked){ openEditor(ci); }                       // → full-screen designer
+          else { var s=st(ci); s.card=false; s.art=null; renderPreview(ci); }
         }
       });
-      unitsWrap.addEventListener('input', function(e){
-        var ta = e.target.closest('textarea[data-msg]'); if(!ta) return;
-        st(ta.getAttribute('data-msg')).message = ta.value;
-      });
       unitsWrap.addEventListener('click', function(e){
-        var cb = e.target.closest('[data-cardstyle]');
-        if(cb){ var cg = cb.closest('[data-cards]'); if(cg){ st(cg.getAttribute('data-cards')).cardStyle = parseInt(cb.getAttribute('data-cardstyle'),10) || 0; cg.querySelectorAll('.gift-card-opt').forEach(function(el){ el.classList.remove('sel'); }); cb.classList.add('sel'); } return; }
+        var ec = e.target.closest('[data-editcard]');
+        if(ec){ openEditor(ec.getAttribute('data-editcard')); return; }
         var b = e.target.closest('[data-paper]'); if(!b) return;
         var group = b.closest('[data-papers]'); if(!group) return;
         st(group.getAttribute('data-papers')).paper = parseInt(b.getAttribute('data-paper'),10) || 0;
@@ -4686,19 +6681,18 @@
       });
     }
 
-    function applyAndClose(){
-      if(unitsWrap){ unitsWrap.querySelectorAll('textarea[data-msg]').forEach(function(ta){ st(ta.getAttribute('data-msg')).message = ta.value; }); }
-      refreshFee(); closePanel();
-    }
+    function applyAndClose(){ refreshFee(); closePanel(); }
     if(doneBtn) doneBtn.addEventListener('click', applyAndClose);
     if(backBtn) backBtn.addEventListener('click', applyAndClose);
 
-    toggle.addEventListener('click', function(e){ e.preventDefault(); e.stopPropagation(); openPanel(); });
-    ['pointerdown','touchstart'].forEach(function(ev){ toggle.addEventListener(ev, function(e){ e.stopPropagation(); }); });
-
-    if(row){
-      row.addEventListener('click', function(){ openPanel(); });
+    function bindOpen(el, m){
+      if(!el) return;
+      el.addEventListener('click', function(e){ e.preventDefault(); e.stopPropagation(); openPanel(m); });
+      ['pointerdown','touchstart'].forEach(function(ev){ el.addEventListener(ev, function(e){ e.stopPropagation(); }); });
     }
+    bindOpen(wrapToggle, 'wrap'); bindOpen(cardToggle, 'card');
+    if(wrapRow) wrapRow.addEventListener('click', function(){ openPanel('wrap'); });
+    if(cardRow) cardRow.addEventListener('click', function(){ openPanel('card'); });
   })();
 
   // (12) tap name / email to edit, with a confirm first
@@ -4719,25 +6713,277 @@
         el.addEventListener(ev, function(e){ e.stopPropagation(); });
       });
     }
-    editable(scope.querySelector('.profile-name'), 'name');
-    editable(scope.querySelector('.email-value'), 'email');
+    // Tap the email (the whole row space) to edit it in a pop-out — the field
+    // shows the full address so you can read it AND fill it in. The change is
+    // confirmed by email before it takes effect.
+    var emailVal = scope.querySelector('.email-value');
+    var emailRow = emailVal && emailVal.closest('.simple-row');
+    function openEmailEditor(){
+      if(accountStatus !== 'active'){ showToast('Sign in to set your email.'); return; }
+      var cur = String(accountEmail || emailVal.textContent || '').trim();
+      if(cur.toLowerCase() === 'guest') cur = '';
+      showPrompt({
+        title: 'Your email',
+        body: 'Used to sign in and to receive your cashback. We’ll email a confirmation link before it changes.',
+        value: cur, type: 'email', inputmode: 'email', autocomplete: 'email', placeholder: 'you@example.com',
+        confirm: 'Save', cancel: 'Cancel'
+      }).then(function(next){
+        if(next == null) return;
+        var clean = String(next).trim();
+        if(!clean || clean === cur) return;
+        if(typeof isValidEmail === 'function' ? !isValidEmail(clean) : !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(clean)){ showToast('Enter a valid email address.'); return; }
+        var backend = window.HugBackend;
+        showToast('Checking…');
+        // 1) block an email already used by another account
+        Promise.resolve(backend && backend.emailAvailable ? backend.emailAvailable(clean) : { ok:true, available:true })
+          .then(function(chk){
+            if(chk && chk.ok && chk.available === false){ showToast('That email is already in use.'); return; }
+            // 2) start the confirmed change — Supabase emails a link; the email
+            //    only switches once they confirm (we don't change the display yet).
+            return Promise.resolve(backend && backend.updateEmail ? backend.updateEmail(clean) : { ok:false })
+              .then(function(res){
+                if(res && res.ok){ showToast('Confirm via the link we just emailed to ' + clean + '.'); }
+                else if(res && /already|registered|in use|exists/i.test(res.message||'')){ showToast('That email is already in use.'); }
+                else { showToast((res && res.message) || 'Couldn’t update email. Try again.'); }
+              });
+          });
+      });
+    }
+    if(emailVal){
+      emailVal.setAttribute('role','button'); emailVal.setAttribute('tabindex','0');
+      // Whole-row tap opens the editor (the email value, the label, or the pill).
+      if(emailRow){ emailRow.addEventListener('click', function(e){ e.stopPropagation(); openEmailEditor(); }); }
+      ['pointerdown','touchstart','pointermove'].forEach(function(ev){ if(emailRow) emailRow.addEventListener(ev, function(e){ e.stopPropagation(); }); });
+    }
+  })();
+
+  // Username (leaderboard name): shows the chosen name, or a stable arbitrary
+  // "hug-NNNNN" default. Tap to edit — tapping a default clears it so you type
+  // fresh; on commit it's checked for uniqueness server-side ("taken" rejects it,
+  // no two "ruary"s). Reflected in the leaderboard + home eco-points "is_me" row.
+  (function profileUsername(){
+    var nameEl = document.querySelector('.screen[data-screen="profile"] .profile-name');
+    if(!nameEl) return;
+    // committed = the saved username; committedDefault = whether that saved value is
+    // still the auto-assigned default (so we show a "pick a username" prompt instead).
+    var committed = '', committedDefault = false, saving = false, committedJustNow = false, confirming = false;
+    var status = '', debTimer = null;
+    var PLACEHOLDER = 'pick a username';
+    var active = function(){ return document.documentElement.dataset.accountStatus === 'active'; };
+
+    // Wrap the name. The pencil hint + accepted-tick are absolutely positioned
+    // inside the wrap so they never knock the name off-centre under the avatar.
+    var wrap = document.createElement('span');
+    wrap.className = 'profile-name-wrap';
+    nameEl.parentNode.insertBefore(wrap, nameEl);
+    wrap.appendChild(nameEl);
+    // Sleek transient checkmark that draws in briefly when a name is accepted.
+    var tick = document.createElement('span');
+    tick.className = 'username-tick';
+    tick.setAttribute('aria-hidden', 'true');
+    tick.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.2 4.4L19 7"/></svg>';
+    wrap.appendChild(tick);
+    function flashTick(){
+      wrap.classList.remove('tick-show');
+      void wrap.offsetWidth;            // restart the animation if it fires twice
+      wrap.classList.add('tick-show');
+      setTimeout(function(){ wrap.classList.remove('tick-show'); }, 1400);
+    }
+
+    // ✓ / ✕ live-availability line shown under the name while editing.
+    var badge = document.createElement('span');
+    badge.className = 'username-status';
+    wrap.insertAdjacentElement('afterend', badge);
+    function setStatus(s){
+      status = s || '';
+      badge.className = 'username-status' + (status ? ' is-' + status : '');
+      badge.textContent = status === 'available' ? '✓ available'
+        : status === 'taken' ? '✕ taken — pick another'
+        : status === 'invalid' ? '✕ use 2–24 characters'
+        : status === 'checking' ? 'checking…' : '';
+    }
+    // Wobble BOTH the status line and the name box itself — a tactile "nope".
+    function flashBad(){
+      [badge, nameEl].forEach(function(el){ el.classList.add('shake'); setTimeout(function(){ el.classList.remove('shake'); }, 420); });
+    }
+    // Optional sensory cue on the chosen-name result (fires only on exit, with the
+    // ✓/shake). Uses the native Haptics plugin if present (a real buzz), else a
+    // vibrate fallback (Android). No-op where neither exists (e.g. iOS without
+    // @capacitor/haptics) — the visible ✓/shake still carry the feedback.
+    function cue(kind){
+      try{
+        var H = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Haptics;
+        if(H){
+          if(H.notification){ H.notification({ type: kind === 'ok' ? 'SUCCESS' : 'ERROR' }); return; }
+          if(H.impact){ H.impact({ style: kind === 'ok' ? 'LIGHT' : 'MEDIUM' }); return; }
+        }
+      }catch(e){}
+      try{ if(navigator.vibrate){ navigator.vibrate(kind === 'ok' ? 12 : [16,40,16]); } }catch(e){}
+    }
+    function text(){ return (nameEl.textContent || '').replace(/\s+/g, ' ').trim(); }
+    function placeCaretEnd(el){
+      try { var r = document.createRange(); r.selectNodeContents(el); r.collapse(false);
+        var s = window.getSelection(); s.removeAllRanges(); s.addRange(r); } catch(e){}
+    }
+
+    function show(username, def){
+      committed = username || '';
+      committedDefault = !!def;
+      // The sharer's real username (not the arbitrary default) rides the share
+      // link so checkout can read "<username>'s referral".
+      window.__hugRefName = (committedDefault || !committed) ? '' : committed;
+      nameEl.textContent = committedDefault ? PLACEHOLDER : (username || '');
+      nameEl.classList.toggle('is-default-name', committedDefault);
+      wrap.classList.toggle('can-edit', active());   // show the pencil only when editable
+      setStatus('');
+    }
+    function load(){
+      var b = window.HugBackend;
+      if(!active()){ show('guest', false); return; }
+      if(!(b && b.getMyUsername)) return;
+      b.getMyUsername().then(function(r){ if(r && r.ok) show(r.username, r.isDefault); }).catch(function(){});
+    }
+    window.__hugUsername = { load: load };
+
+    nameEl.setAttribute('contenteditable', 'true');
+    nameEl.setAttribute('role', 'textbox');
+    nameEl.setAttribute('tabindex', '0');
+    nameEl.setAttribute('enterkeyhint', 'done');
+    nameEl.setAttribute('autocapitalize', 'none');
+    nameEl.setAttribute('spellcheck', 'false');
+    nameEl.classList.add('editable-name');
+    ['pointerdown','touchstart','pointermove'].forEach(function(ev){ nameEl.addEventListener(ev, function(e){ e.stopPropagation(); }); });
+
+    // Commit = the "check as you exit" step: try to claim the name. The server
+    // accepts it (✓ tick + save + happy cue) or rejects it as taken/invalid
+    // (✕ shake + nope cue). This is the ONLY place the tick fires. Returns the
+    // status so the caller (blur) can decide what to do next.
+    function commit(v){
+      saving = true; setStatus('checking');
+      return Promise.resolve(window.HugBackend && window.HugBackend.setUsername ? window.HugBackend.setUsername(v) : { ok:false })
+        .then(function(res){
+          saving = false;
+          var st = (res && res.status) ? res.status : (res && res.ok ? 'ok' : 'error');
+          if(res && res.ok){
+            committedJustNow = true;
+            show(v, false);
+            wrap.classList.remove('editing');
+            flashTick(); cue('ok');      // brief "accepted" checkmark + happy cue
+            showToast('Username updated.');
+            if(window.__hugLeaderboard) window.__hugLeaderboard.load();
+            try{ nameEl.blur(); }catch(e){}
+            setTimeout(function(){ setStatus(''); committedJustNow = false; }, 1300);
+          } else if(st === 'taken'){ setStatus('taken'); flashBad(); cue('bad'); }
+          else { setStatus('invalid'); flashBad(); cue('bad'); }
+          return st;
+        })
+        .catch(function(){ saving = false; setStatus(''); return 'error'; });
+    }
+
+    nameEl.addEventListener('focus', function(){
+      if(!active()){ nameEl.blur(); return; }
+      wrap.classList.add('editing');     // hide the pencil hint while typing
+      // First tap on the "pick a username" prompt clears it so they type fresh.
+      // (On a re-focus from "keep editing" the field holds typed text — don't wipe it.)
+      if(committedDefault && text() === PLACEHOLDER){ nameEl.textContent = ''; nameEl.classList.remove('is-default-name'); }
+      setStatus('');
+    });
+    nameEl.addEventListener('input', function(){
+      // No live availability check: the ✓/shake only fire when you try to LEAVE
+      // the field (Enter or tap away) — i.e. when you've actually chosen a name.
+      // Typing or backspacing keeps the field quiet (no premature tick).
+      if(debTimer){ clearTimeout(debTimer); debTimer = null; }
+      if(status){ setStatus(''); }
+    });
+    // Enter / Done = an explicit "I've chosen this name" → check on exit.
+    // commit() shows the ✓ (saved) or the ✕ shake (taken). On a reject the field
+    // keeps focus (preventDefault) so they can fix it without leaving.
+    nameEl.addEventListener('keydown', function(e){
+      if(e.key !== 'Enter') return;
+      e.preventDefault();
+      var v = text();
+      if(v === committed){ committedJustNow = true; try{ nameEl.blur(); }catch(_){} setTimeout(function(){ committedJustNow = false; }, 60); return; }
+      if(v.length < 2){ setStatus('invalid'); flashBad(); cue('bad'); return; }
+      commit(v);
+    });
+    // Blur = tapping away = also an exit → run the same check-on-exit:
+    //   • unchanged / empty / too short → just leave (restore current name)
+    //   • otherwise commit(): ✓ saves it; on ✕ taken the shake fires, then we
+    //     offer keep-editing vs leave (they've tapped away from an unsaved name).
+    nameEl.addEventListener('blur', function(){
+      wrap.classList.remove('editing');   // pencil hint returns once idle
+      if(debTimer){ clearTimeout(debTimer); debTimer = null; }
+      if(saving || committedJustNow || confirming) return;
+      var v = text();
+      if(v === committed || v === ''){ show(committed, committedDefault); return; }
+      if(v.length < 2){ flashBad(); cue('bad'); show(committed, committedDefault); return; }
+      confirming = true;                  // guard re-entrant blur during the async check
+      commit(v).then(function(st){
+        confirming = false;
+        if(st === 'ok') return;           // saved — tick already shown
+        confirming = true;
+        showConfirm({
+          title: st === 'taken' ? 'Username taken' : 'Leave without saving?',
+          body: st === 'taken'
+            ? '“' + v + '” is already taken. Keep your current username instead?'
+            : 'That username isn’t saved yet. Keep your current username instead?',
+          cancel: 'Keep editing',
+          confirm: 'Leave'
+        }).then(function(leave){
+          confirming = false;
+          if(leave){ show(committed, committedDefault); }
+          else { nameEl.textContent = v; nameEl.focus(); placeCaretEnd(nameEl); }
+        });
+      });
+    });
+
+    load();
   })();
 
 
-  // (14) purchase history: tap a row to expand its details
+  // (14) purchase history: the signed-in user's REAL purchases (HugBackend.listPurchases,
+  // RLS-scoped). Empty when signed out / fresh, so no legacy demo data leaks through.
   (function purchasesFeature(){
     var scope = document.querySelector('.screen[data-screen="purchases"]');
     if(!scope) return;
-    scope.querySelectorAll('.purchase-row').forEach(function(row){
-      row.addEventListener('click', function(e){
-        e.stopPropagation();
-        var item = row.closest('.purchase-item');
-        if(item) item.classList.toggle('open');
-      });
-      ['pointerdown','touchstart','pointermove'].forEach(function(ev){
-        row.addEventListener(ev, function(e){ e.stopPropagation(); });
-      });
+    var list = scope.querySelector('.purchase-list');
+    if(!list) return;
+    var TINT = { 'dark roast':'pr-dark', 'cherry pop':'pr-cherry', 'blue crush':'pr-blue', 'lemon drop':'pr-lemon' };
+    function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); }
+    function fmtDate(iso){ try{ return new Date(iso).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}).toLowerCase(); }catch(e){ return ''; } }
+    function rowHtml(p){
+      var items = Array.isArray(p.items) ? p.items : [];
+      var first = items[0] || {};
+      var variant = String(first.variant||'').toLowerCase();
+      var title = (first.title||'hug o') + (variant ? ' — ' + variant : '') + (items.length>1 ? ' +'+(items.length-1)+' more' : '');
+      var price = '£' + (((p.total_cents)||0)/100).toFixed(2);
+      var date = p.ordered_at ? fmtDate(p.ordered_at) : '';
+      return '<div class="purchase-item">'
+        + '<button class="simple-row purchase-row '+(TINT[variant]||'')+'" type="button"><span class="row-left">'+esc(title)+'</span><span class="purchase-plus">+</span></button>'
+        + '<div class="purchase-detail">'
+        +   '<div class="purchase-kv"><span>paid</span><span>'+esc(date)+(date?' · ':'')+price+'</span></div>'
+        +   (p.order_number ? '<div class="purchase-kv"><span>order</span><span>'+esc(p.order_number)+'</span></div>' : '')
+        +   (p.mug_qty ? '<div class="purchase-kv"><span>mugs</span><span>'+esc(String(p.mug_qty))+'</span></div>' : '')
+        + '</div>'
+        + '</div>';
+    }
+    function render(items){
+      list.innerHTML = (items && items.length) ? items.map(rowHtml).join('') : '<p class="purchases-empty">No purchases yet.</p>';
+    }
+    function clear(){ render([]); }
+    function refresh(){
+      var b = window.HugBackend;
+      if(!(b && b.enabled && b.listPurchases) || document.documentElement.dataset.accountStatus !== 'active'){ clear(); return; }
+      b.listPurchases().then(function(res){ render(res && res.ok ? (res.purchases||[]) : []); }).catch(function(){ clear(); });
+    }
+    // Expand a row on tap (delegation, so re-rendered rows keep working).
+    list.addEventListener('click', function(e){
+      var row = e.target.closest('.purchase-row'); if(!row) return;
+      e.stopPropagation();
+      var item = row.closest('.purchase-item'); if(item) item.classList.toggle('open');
     });
+    window.__hugPurchases = { refresh: refresh, clear: clear };
+    if(document.documentElement.dataset.accountStatus === 'active') refresh(); else clear();
   })();
 
 /* address edit (profile info-box) — inline editing within the box, no popup.
@@ -4762,8 +7008,25 @@
     } else {
       btn.textContent = "edit";
       vals.forEach(v => { v.readOnly = true; v.value = (v.value || "").trim(); });
+      saveAddressToProfile();   // persist to shared profiles.shipping_address
     }
   });
+
+  // Write the address form to the SHARED profiles.shipping_address (jsonb) so the
+  // app + website show the same delivery address. Single app street line -> line1.
+  function saveAddressToProfile() {
+    if (document.documentElement.dataset.accountStatus !== "active") return;   // signed-in only
+    const backend = window.HugBackend;
+    if (!backend || !backend.enabled || !backend.saveShippingAddress) return;
+    function fv(n) { const el = box.querySelector('.addr-form [name="' + n + '"]'); return el && el.value ? el.value.trim() : ""; }
+    const addr = {
+      name: fv("name"), line1: fv("street-address"), line2: "",
+      city: fv("city"), postcode: fv("postal-code"), country: "United Kingdom"
+    };
+    if (!addr.name && !addr.line1 && !addr.city && !addr.postcode) return;   // nothing to save
+    backend.saveShippingAddress(addr);
+    if (typeof prefillCheckoutAddress === "function") prefillCheckoutAddress();
+  }
   box.addEventListener("keydown", e => {
     const t = e.target;
     if (e.key === "Enter" && t.classList && t.classList.contains("addr-v")) {
@@ -4822,16 +7085,30 @@
 })();
 
 
-/* discount code apply (checkout) */
+/* Referral code apply (checkout). Validates + previews the 10% off in the total;
+   the applied state persists until the code is edited. */
 (function () {
   const btn = document.querySelector(".discount-apply");
   const field = document.querySelector(".discount-field");
   if (!btn || !field) return;
+  function resetBtn(){ btn.classList.remove("applied"); btn.textContent = "apply"; }
   btn.addEventListener("click", () => {
-    if (!field.value.trim()) { field.focus(); return; }
+    const status = window.__hugApplyReferral ? window.__hugApplyReferral() : "applied";
+    if (status === "empty") { field.focus(); return; }
+    field.blur();   // dismiss the keyboard cleanly (no scroll jump)
+    if (status === "own") {
+      btn.classList.remove("applied");
+      btn.textContent = "your own code";
+      setTimeout(resetBtn, 1900);
+      return;
+    }
     btn.classList.add("applied");
-    btn.textContent = "applied";
-    setTimeout(() => { btn.classList.remove("applied"); btn.textContent = "apply"; }, 1600);
+    btn.textContent = "applied ✓";
+  });
+  // Editing the code clears the applied state + the previewed discount.
+  field.addEventListener("input", () => {
+    if (btn.classList.contains("applied")) resetBtn();
+    if (window.__hugResetReferral) window.__hugResetReferral();
   });
 })();
 
@@ -4886,6 +7163,7 @@
       if (!sc || !el || !el.closest || !el.closest('.checkout-content')) return;
       var h = (info && info.keyboardHeight) || 0;
       if (h <= 0) return;
+      if (sc._hugKbScroll == null) sc._hugKbScroll = sc.scrollTop;   // remember where we were
       var f = fitScale() || 1;
       sc.style.paddingBottom = Math.ceil(h / f) + 'px';
       requestAnimationFrame(function(){
@@ -4899,7 +7177,8 @@
       var sc = scroller();
       if (!sc) return;
       sc.style.paddingBottom = '';
-      sc.scrollTop = 0;
+      // Restore the pre-keyboard scroll position instead of jumping to the top.
+      if (sc._hugKbScroll != null) { sc.scrollTop = sc._hugKbScroll; sc._hugKbScroll = null; }
     });
     return true;
   }
@@ -4970,13 +7249,27 @@
 (function scanLeaveCover(){
   function init(){
     var scanScreen = document.querySelector('.screen[data-screen="scan"]');
+    var phoneEl = document.querySelector('.phone');
     var root = document.documentElement;
     if (!scanScreen || !root || !window.MutationObserver) return;
-    new MutationObserver(function(){
-      var leaving = !scanScreen.classList.contains('active') ||
-                    scanScreen.classList.contains('quick-fade-leave');
-      if (leaving) root.classList.remove('scan-camera-active');
-    }).observe(scanScreen, { attributes: true, attributeFilter: ['class'] });
+    // The transparent class may only stay on while we're ACTUALLY on the scan
+    // screen — judged by the authoritative current screen, NOT the .active class
+    // (a stale .active is what was leaving the whole app grey).
+    function onScan(){
+      // Defer to the main shared check; if it's not ready yet, assume NOT on scan
+      // (strip), since the camera class is only ever set after that check passes.
+      return !!(window.__hugOnScan && window.__hugOnScan());
+    }
+    function strip(){
+      if (root.classList.contains('scan-camera-active') && !onScan()) {
+        root.classList.remove('scan-camera-active');
+      }
+    }
+    new MutationObserver(strip).observe(scanScreen, { attributes: true, attributeFilter: ['class'] });
+    new MutationObserver(strip).observe(root, { attributes: true, attributeFilter: ['class'] });
+    if (phoneEl) new MutationObserver(strip).observe(phoneEl, { attributes: true, attributeFilter: ['data-current'] });
+    strip();                 // clear any already-stuck state on load
+    setInterval(strip, 1000); // catch-all for a stuck state that fires no mutation
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();

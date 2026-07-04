@@ -18,8 +18,8 @@
   --ink: #050505;
   --muted: #343434;
   --row: rgba(235, 235, 235, .5);
-  --row-pending: #fce3e4;
-  --row-pending-stroke: rgba(214, 118, 128, .5);
+  --row-pending: #fcd2d7;
+  --row-pending-stroke: rgba(214, 108, 120, .62);
   --row-approved: #e3fce4;
   --row-approved-stroke: rgba(120, 196, 132, .5);
   --fade: #cfcfcf;
@@ -810,6 +810,25 @@ img {
   text-align: right;
   padding-right: 1px;
 }
+
+/* The caller's own row in the real leaderboard. */
+.leader-row.is-me {
+  background: linear-gradient(124deg, var(--brand-a), var(--brand-b));
+  color: #fff;
+}
+.leader-row.is-me span:first-child { font-weight: 600; }
+
+/* Shown when the leaderboard has no rows yet (or the user is signed out). */
+.leader-empty {
+  padding: 22px 14px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: .12em;
+  opacity: .55;
+}
+/* Shown under a populated board when the viewer isn't ranked yet. */
+.leader-empty--footer { padding: 15px 14px 7px; margin-top: 4px; border-top: 1px solid rgba(5,5,5,.06); opacity: .5; }
 
 .bottom-nav {
   position: relative;
@@ -2154,6 +2173,73 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
   letter-spacing: .22em;
   text-align: center;
 }
+/* Tap-to-edit username. CRITICAL: the app sets `user-select:none !important` on
+   everything except input/textarea, which makes a contenteditable UN-editable on
+   iOS — so the name field must opt back into text selection or you can't tap it. */
+.profile-name.editable-name {
+  cursor: text;
+  outline: none;
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  -webkit-touch-callout: default;
+  border-bottom: 1.5px solid rgba(0, 0, 0, .16);
+  padding: 3px 8px 4px;
+  border-radius: 6px;
+  transition: border-color .18s ease, background .18s ease;
+  min-width: 2ch;
+}
+.profile-name.editable-name:focus {
+  border-bottom-color: var(--brand-a);
+  background: rgba(0, 0, 0, .035);
+}
+.profile-name.editable-name.is-default-name { color: var(--muted); opacity: .6; }
+/* Live username availability line (✓ / ✕) shown under the name while editing. */
+.username-status { display: block; text-align: center; font-size: 12px; letter-spacing: .06em;
+  margin: 8px 0 0; min-height: 15px; line-height: 15px; }
+.username-status:empty { display: none; }
+.username-status.is-available { color: #16a34a; }
+.username-status.is-taken, .username-status.is-invalid { color: #e0413a; }
+.username-status.is-checking { color: var(--muted); opacity: .7; }
+.username-status.shake { animation: usernameShake .4s ease; }
+/* The name box itself wobbles too when a name is rejected — a tactile "nope". */
+.profile-name.editable-name.shake { animation: usernameShake .4s ease; }
+@keyframes usernameShake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-4px)} 75%{transform:translateX(4px)} }
+
+/* The name sits dead-centre under the avatar; the pencil hint + accepted-tick are
+   absolutely positioned so they NEVER shift the name off-centre. */
+.profile-name-wrap {
+  position: relative;
+  justify-self: center;
+  display: inline-flex;
+  align-items: center;
+}
+.profile-name-wrap .profile-name { margin: 0; }
+.screen[data-screen="profile"] .profile-name-wrap { margin: 16px 0 18px; }
+
+/* Sleek transient "accepted" check — draws in, holds, fades. Never persistent.
+   Absolutely positioned so it never knocks the centred name sideways. */
+.username-tick {
+  position: absolute; left: 100%; top: 50%;
+  transform: translateY(-50%);
+  margin-left: 9px;
+  width: 20px; height: 20px;
+  opacity: 0; pointer-events: none;
+}
+.username-tick svg { width: 100%; height: 100%; display: block; }
+.username-tick svg path {
+  fill: none; stroke: #16a34a; stroke-width: 3;
+  stroke-linecap: round; stroke-linejoin: round;
+  stroke-dasharray: 26; stroke-dashoffset: 26;
+}
+.profile-name-wrap.tick-show .username-tick { animation: tickFlash 1.4s ease forwards; }
+.profile-name-wrap.tick-show .username-tick svg path { animation: tickDraw .42s .08s ease forwards; }
+@keyframes tickDraw { to { stroke-dashoffset: 0; } }
+@keyframes tickFlash {
+  0%   { opacity: 0; transform: translateY(-50%) scale(.7); }
+  14%  { opacity: 1; transform: translateY(-50%) scale(1); }
+  68%  { opacity: 1; transform: translateY(-50%) scale(1); }
+  100% { opacity: 0; transform: translateY(-50%) scale(.96); }
+}
 
 .screen[data-screen="profile"] .plain-content {
   gap: 2px;
@@ -2248,7 +2334,7 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
   width: 27px;
   height: 27px;
   stroke: #050505;
-  stroke-width: 3.4;
+  stroke-width: 2.55;   /* 25% thinner than 3.4 — key / sign-out / trash / prototype row icons */
   stroke-linecap: round;
   stroke-linejoin: round;
   fill: none;
@@ -2738,6 +2824,21 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
     font-weight: 600;
   }
 
+  /* Referral discount preview line (shown once a code is applied). */
+  .checkout-discount {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    padding: 2px 18px 0;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: .05em;
+    color: #2f7a3c;
+  }
+  .checkout-discount span:last-child { justify-self: end; text-align: right; }
+  .checkout-discount[hidden] { display: none; }
+
 .pay-button {
   width: 100%;
   height: 54px;
@@ -2789,7 +2890,7 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
   width: min(100%, calc(var(--phone-w) - (var(--page-pad) * 2)));
   margin-inline: auto;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);  /* two even top cards: QR scans + Referrals */
   gap: 10px;
   align-items: stretch;
 }
@@ -3082,7 +3183,62 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
 .account-main .simple-row.wide.approved {
   background: var(--row-approved);
   border-color: var(--row-approved-stroke);
+  grid-template-columns: 1fr auto auto;   /* label · amount · cash-out arrow */
+  column-gap: 11px;
+  cursor: pointer;                         /* it's a control even below £20 */
 }
+
+/* Cash-out affordance: a small on-brand (gradient) download arrow that marks the
+   deposited card as actionable. Half opacity below the £20 threshold; goes full
+   opacity once cashable (alongside the pulsing drop-shadow below). */
+.cashout-arrow {
+  width: 19px;
+  height: 19px;
+  justify-self: end;
+  align-self: center;
+  fill: none;
+  stroke: url(#hug-grad);
+  stroke-width: 3.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: .45;
+  transition: opacity .35s ease;
+  pointer-events: none;                    /* taps fall through to the card */
+}
+.account-main .simple-row.wide.approved.cashable .cashout-arrow {
+  opacity: 1;
+}
+
+/* Cashed out — account summary CARD matches the cashed-out HISTORY rows. Greens
+   are ~15% lighter than the original #b6debc / #235c2d (box, borders + all text). */
+.account-main .simple-row.wide.cashed-out,
+.history-row.cashed_out {
+  background: #c1e3c6;
+  border-color: rgba(35, 92, 45, .36);
+}
+.cashed-accent { color: #44744c; }
+.history-row.cashed_out { color: #44744c; }
+.history-row.cashed_out .date { color: #44744c; opacity: .68; }
+.txn-status.txn-cashed_out { background: rgba(35, 92, 45, .17); color: #44744c; }
+
+/* Cashable: the deposited balance has reached the £20 free-cash-out threshold.
+   A subtle pulsing drop-shadow on the bounding box (not intense) invites the tap. */
+@keyframes cashablePulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(33, 92, 45, 0); }
+  50%      { box-shadow: 0 4px 16px 1px rgba(33, 92, 45, .26); }
+}
+.account-main .simple-row.wide.approved.cashable {
+  animation: cashablePulse 1.9s ease-in-out infinite;
+  cursor: pointer;
+}
+
+/* Master-QR nudge (shown on the QR screen when there's no account / no linked product). */
+.qr-nudge { display: none; text-align: center; margin-top: 20px; padding: 0 24px; }
+.qr-nudge.show { display: block; }
+.qr-nudge-msg { font-size: 14px; color: var(--muted); margin: 0 0 14px; line-height: 1.45; }
+.qr-nudge-btn { min-height: 44px; padding: 0 22px; border-radius: 999px; border: 0; color: #fff;
+  font-family: var(--font-ui); font-weight: 600; font-size: 14px;
+  background-image: linear-gradient(124deg, var(--brand-a), var(--brand-b)); cursor: pointer; }
 
 /* Impact: pending / actioned amount lists (same colours as account pending/deposited) */
 .screen[data-screen="impact"] .simple-row.pending {
@@ -3307,15 +3463,18 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
 }
 
 .screen[data-screen="profile"] .email-value {
-  max-width: 22ch;
+  max-width: 11ch;             /* show ~the first 10 chars; tap to expand the rest */
   min-width: 0;
   margin-right: 12px;          /* sit the value within the pill's rounded end, not jammed at the edge */
-  font-size: 13px;
-  letter-spacing: .035em;
+  font-size: 17px;             /* same size as the rest of the row text */
+  letter-spacing: .02em;
   text-overflow: ellipsis;
+  cursor: pointer;
   -webkit-mask-image: none;
   mask-image: none;
 }
+/* Tap anywhere on the email row to edit it in a pop-out. */
+.simple-row.email-row { cursor: pointer; }
 .share-box {
   margin-top: 4px; border-radius: 18px; background: var(--row);
   padding: 14px 16px; display: grid; gap: 12px;
@@ -3336,6 +3495,16 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
   transition: background .2s ease;
 }
 .copy-btn.copied { background: #2f7a3c; }
+/* Native-style "share" button — opens the iOS share sheet (email / WhatsApp / …). */
+.share-send {
+  display: flex; align-items: center; justify-content: center; gap: 9px;
+  width: 100%; min-height: 46px; border-radius: 14px; margin-top: 2px;
+  border: 0; cursor: pointer; font-family: var(--font-ui); font-size: 15px; font-weight: 600;
+  letter-spacing: .02em; color: #fff; background-image: linear-gradient(124deg, var(--brand-a), var(--brand-b));
+  transition: transform .12s ease, filter .12s ease;
+}
+.share-send:active { transform: scale(.98); filter: brightness(.96); }
+.share-glyph { width: 19px; height: 19px; flex: none; }
 /* Profile referral box: a guest account shows "Not activated" + an activate
    button that opens the scanner; an active account shows the code/QR lines. */
 .share-inactive { display: grid; gap: 12px; }
@@ -3348,6 +3517,168 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
 }
 html[data-account-status="active"] .share-inactive { display: none; }
 html[data-account-status="guest"] .share-active-only { display: none; }
+/* Active but no product linked → referrals locked: hide the code/link/QR and
+   show the "link a product" prompt instead. */
+.share-locked { display: none; gap: 12px; }
+html[data-referral="locked"] .share-active-only { display: none; }
+html[data-referral="locked"] .share-locked { display: grid; }
+/* On-theme toast (e.g. when the last product is unlinked → referrals paused). */
+.hug-toast {
+  position: fixed; left: 50%; bottom: calc(var(--safe-bottom, 0px) + 88px);
+  transform: translateX(-50%) translateY(12px);
+  max-width: min(340px, calc(100vw - 40px));
+  background: #fff; color: var(--ink); border: 1px solid var(--box-stroke);
+  border-radius: 14px; padding: 12px 18px; font-size: 14px; line-height: 1.4;
+  text-align: center; box-shadow: 0 18px 44px -22px rgba(5,5,5,.45);
+  opacity: 0; pointer-events: none; z-index: 120;
+  transition: opacity .25s ease, transform .25s ease;
+}
+.hug-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+/* On-theme yes/no confirm (e.g. "Log in to account?" on a login-QR scan). */
+/* translateZ(0) forces the dim onto its own GPU layer so it paints ABOVE other
+   composited layers (e.g. the .qr-icon, which has translateZ(0)). Without this,
+   iOS WKWebView leaves the QR thumbnail bright on top of the dim. */
+.hug-confirm-overlay { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(10,10,10,.34); opacity: 0; transition: opacity .2s ease, padding-bottom .24s ease; transform: translateZ(0); }
+/* Keep the pop-out (email / username confirm) clear of the on-screen keyboard.
+   The overlay sits OUTSIDE the --fit-scaled .stage, so the design-px --kb is
+   converted back to raw viewport px with * --fit. Extra bottom padding shrinks
+   the centring area to the space above the keyboard, lifting the card up. */
+html.keyboard-open .hug-confirm-overlay { padding-bottom: calc(24px + (var(--kb, 0px) * var(--fit, 1))); }
+.hug-confirm-overlay.show { opacity: 1; }
+.hug-confirm-card { width: 100%; max-width: 320px; background: #fff; border-radius: 20px; padding: 24px 22px 18px; text-align: center; box-shadow: 0 30px 70px -28px rgba(5,5,5,.5); transform: translateY(10px); transition: transform .2s ease; }
+.hug-confirm-overlay.show .hug-confirm-card { transform: translateY(0); }
+.hug-confirm-title { font-family: var(--font-ui); font-weight: 600; font-size: 18px; margin: 0 0 8px; color: var(--ink); }
+.hug-confirm-body { font-size: 14px; color: var(--muted); margin: 0 0 20px; line-height: 1.45; }
+.hug-confirm-input {
+  width: 100%; box-sizing: border-box; margin: 0 0 18px;
+  border: 1px solid var(--box-stroke); border-radius: 12px; background: #fff;
+  padding: 13px 14px; font-family: var(--font-ui); font-size: 16px; letter-spacing: .01em;
+  color: var(--ink); text-align: center;
+}
+.hug-confirm-input:focus { outline: none; border-color: var(--brand-a); }
+.hug-confirm-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.hug-confirm-actions button { min-height: 46px; border-radius: 999px; border: 0; font-family: var(--font-ui); font-weight: 600; font-size: 14px; cursor: pointer; }
+.hug-confirm-cancel { background: var(--row); color: var(--ink); }
+.hug-confirm-ok { color: #fff; background-image: linear-gradient(124deg, var(--brand-a), var(--brand-b)); }
+
+/* Hidden diagnostics screen (Settings → tap version 7×). Read-only support panel. */
+.diag-version { display: block; width: 100%; margin: 22px auto 6px; padding: 8px; border: 0; background: transparent;
+  font-family: var(--font-ui); font-size: 11px; letter-spacing: .04em; color: var(--muted); opacity: .6;
+  text-align: center; cursor: pointer; -webkit-user-select: none; user-select: none; }
+.diag-overlay { position: fixed; inset: 0; z-index: 260; display: flex; align-items: center; justify-content: center; padding: 18px;
+  background: rgba(10,10,10,.42); opacity: 0; transition: opacity .2s ease; }
+.diag-overlay.show { opacity: 1; }
+.diag-card { width: 100%; max-width: 360px; max-height: 86vh; display: flex; flex-direction: column;
+  background: #fff; border-radius: 20px; overflow: hidden; box-shadow: 0 30px 70px -28px rgba(5,5,5,.5);
+  transform: translateY(10px); transition: transform .2s ease; }
+.diag-overlay.show .diag-card { transform: translateY(0); }
+.diag-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px 12px; border-bottom: 1px solid var(--box-stroke); }
+.diag-title { font-family: var(--font-ui); font-weight: 600; font-size: 16px; color: var(--ink); }
+.diag-close { border: 0; background: transparent; font-size: 18px; line-height: 1; color: var(--muted); cursor: pointer; padding: 4px; }
+.diag-scroll { overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 6px 18px 14px; }
+.diag-sec { font-family: var(--font-ui); font-weight: 600; font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--muted); margin: 16px 0 6px; }
+.diag-row { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; border-bottom: 1px solid rgba(0,0,0,.04); font-size: 12.5px; }
+.diag-k { flex: 0 0 88px; color: var(--muted); font-family: var(--font-ui); }
+.diag-v { flex: 1 1 auto; color: var(--ink); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-word; }
+.diag-t { flex: 0 0 auto; color: var(--muted); font-size: 10.5px; font-family: var(--font-ui); white-space: nowrap; }
+.diag-ev { padding: 3px 0; font-size: 11.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink); line-height: 1.4; word-break: break-word; }
+.diag-ev .diag-t { display: inline; color: var(--muted); margin-right: 6px; }
+.diag-evn { color: var(--brand-a); }
+.diag-evd { color: var(--muted); }
+.diag-empty { padding: 6px 0; font-size: 12px; color: var(--muted); font-family: var(--font-ui); }
+.diag-actions { padding: 12px 18px 16px; border-top: 1px solid var(--box-stroke); }
+.diag-copy { width: 100%; min-height: 46px; border-radius: 999px; border: 0; cursor: pointer;
+  font-family: var(--font-ui); font-weight: 600; font-size: 14px; color: #fff;
+  background-image: linear-gradient(124deg, var(--brand-a), var(--brand-b)); }
+
+/* Offline banner — driven by html.is-offline (set from HugNet hug:online/offline). */
+.net-banner { position: fixed; left: 0; right: 0; top: 0; z-index: 300;
+  transform: translateY(-100%); transition: transform .25s ease;
+  background: var(--ink); color: #fff; text-align: center;
+  font-family: var(--font-ui); font-weight: 600; font-size: 12.5px; letter-spacing: .01em;
+  padding: calc(env(safe-area-inset-top, 0px) + 8px) 12px 8px; }
+html.is-offline .net-banner { transform: translateY(0); }
+
+/* Help & support overlay (Settings → help & support). Mirrors the diagnostics card. */
+.help-overlay { position: fixed; inset: 0; z-index: 260; display: flex; align-items: flex-end; justify-content: center; padding: 0;
+  background: rgba(10,10,10,.42); opacity: 0; transition: opacity .2s ease; }
+.help-overlay.show { opacity: 1; }
+.help-card { width: 100%; max-width: 460px; max-height: 86vh; display: flex; flex-direction: column;
+  background: #fff; border-radius: 22px 22px 0 0; overflow: hidden; box-shadow: 0 -20px 60px -28px rgba(5,5,5,.5);
+  transform: translateY(16px); transition: transform .22s ease; padding-bottom: env(safe-area-inset-bottom, 0px); }
+.help-overlay.show .help-card { transform: translateY(0); }
+.help-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px 12px; border-bottom: 1px solid var(--box-stroke); }
+.help-title { font-family: var(--font-ui); font-weight: 600; font-size: 16px; color: var(--ink); }
+.help-close { border: 0; background: transparent; font-size: 18px; line-height: 1; color: var(--muted); cursor: pointer; padding: 4px; }
+.help-scroll { overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 6px 14px 18px; }
+.help-item { border-bottom: 1px solid rgba(0,0,0,.05); }
+.help-q { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: transparent; border: 0; cursor: pointer; text-align: left;
+  font-family: var(--font-ui); font-weight: 600; font-size: 14px; color: var(--ink); padding: 14px 4px; }
+.help-chev { color: var(--muted); transition: transform .2s ease; }
+.help-item.open .help-chev { transform: rotate(90deg); }
+.help-a { display: none; padding: 0 4px 14px; }
+.help-item.open .help-a { display: block; }
+.help-a p { margin: 0 0 12px; font-size: 13.5px; line-height: 1.5; color: var(--muted); }
+.help-email { min-height: 42px; padding: 0 18px; border-radius: 999px; border: 0; cursor: pointer;
+  font-family: var(--font-ui); font-weight: 600; font-size: 13px; color: #fff;
+  background-image: linear-gradient(124deg, var(--brand-a), var(--brand-b)); }
+.help-email--general { width: 100%; min-height: 46px; margin-top: 16px; font-size: 14px; }
+
+/* Dedicated account auth modal: sign in / set up / set a password. Mirrors the
+   web account page so a password set on either surface works on both. */
+.hug-auth-overlay { position: fixed; inset: 0; z-index: 210; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(10,10,10,.4); opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .2s ease, visibility .2s ease; overflow: auto; }
+.hug-auth-overlay.show { opacity: 1; visibility: visible; pointer-events: auto; }
+.hug-auth-card { position: relative; width: 100%; max-width: 340px; background: #fff; border-radius: 20px; padding: 26px 22px 18px; box-shadow: 0 30px 70px -28px rgba(5,5,5,.5); transform: translateY(10px); transition: transform .2s ease; }
+.hug-auth-overlay.show .hug-auth-card { transform: translateY(0); }
+.hug-auth-close { position: absolute; top: 8px; right: 12px; border: 0; background: transparent; font-size: 24px; line-height: 1; color: var(--muted); cursor: pointer; }
+.hug-auth-title { font-family: var(--font-ui); font-weight: 600; font-size: 19px; margin: 0 0 6px; color: var(--ink); }
+.hug-auth-copy { font-size: 13px; color: var(--muted); margin: 0 0 16px; line-height: 1.45; }
+/* Remembered-account chips (tap to fill the email; × forgets it). */
+.hug-auth-accounts { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 12px; }
+.hug-auth-account { display: inline-flex; align-items: center; gap: 7px; max-width: 100%;
+  border: 1px solid var(--row-approved-stroke); background: var(--row-approved);
+  border-radius: 999px; padding: 7px 10px 7px 13px; cursor: pointer;
+  font-family: var(--font-ui); font-size: 13px; color: var(--ink); }
+.hug-auth-account-em { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hug-auth-account-x { display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; border-radius: 50%; font-size: 15px; line-height: 1;
+  color: var(--muted); background: rgba(0,0,0,.05); }
+/* Face ID chip: brand-stroked face glyph; signs in on tap. */
+.hug-auth-account.has-bio { padding-left: 9px; }
+.hug-auth-account-face { width: 16px; height: 16px; flex: 0 0 auto; fill: none;
+  stroke: var(--brand-a); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.hug-auth-form { display: grid; gap: 10px; }
+.hug-auth-input { width: 100%; min-height: 46px; border-radius: 12px; border: 1px solid var(--row); background: var(--row); padding: 0 14px; font-family: var(--font-ui); font-size: 15px; color: var(--ink); box-sizing: border-box; }
+.hug-auth-input:focus { outline: none; border-color: var(--brand-a); background: #fff; }
+.hug-auth-error { min-height: 15px; margin: 1px 0 0; font-size: 12.5px; color: #c0322b; }
+.hug-auth-submit { min-height: 48px; border-radius: 999px; border: 0; color: #fff; font-family: var(--font-ui); font-weight: 600; font-size: 15px; cursor: pointer; background-image: linear-gradient(124deg, var(--brand-a), var(--brand-b)); }
+.hug-auth-links { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; text-align: center; }
+.hug-auth-links button { border: 0; background: transparent; font-family: var(--font-ui); font-size: 13px; color: var(--muted); cursor: pointer; text-decoration: underline; }
+.hug-auth-links button:empty { display: none; }
+/* Field visibility per mode/stage. */
+.hug-auth-overlay .hug-auth-name { display: none; }
+.hug-auth-overlay[data-mode="signup"][data-stage="main"] .hug-auth-name { display: block; }
+.hug-auth-overlay .hug-auth-code { display: none; }
+.hug-auth-overlay[data-stage="code"] .hug-auth-code { display: block; }
+/* Confirm-password step (sign-up + set-password) shows only the password field. */
+.hug-auth-overlay[data-stage="code"] .hug-auth-name,
+.hug-auth-overlay[data-stage="code"] .hug-auth-email,
+.hug-auth-overlay[data-stage="code"] .hug-auth-pass,
+.hug-auth-overlay[data-mode="signup"][data-stage="confirm"] .hug-auth-email,
+.hug-auth-overlay[data-mode="setpass"] .hug-auth-name,
+.hug-auth-overlay[data-mode="setpass"] .hug-auth-email { display: none; }
+/* Settings account rows: full-width + same 13px rhythm as the other rows. */
+.account-controls { width: 100%; display: grid; gap: 13px; }
+.prototype-row { margin-top: 13px; }
+/* Prototype row uses the exact settings icon (assets/icon-settings.svg), smaller. */
+.proto-icon { width: 20px; height: 20px; }
+/* Prototype = a real on/off slider: red + knob-left = off, green + knob-right = on. */
+.proto-switch { width: 46px; height: 26px; border-radius: 999px; background: #d64545; position: relative; flex: 0 0 auto; transition: background .22s ease; }
+html[data-demo="on"] .proto-switch { background: #2f9e44; }
+.proto-knob { position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .22s ease; }
+html[data-demo="on"] .proto-knob { transform: translateX(20px); }
 .share-show {
   width: 100%; height: 42px; border: 0; border-radius: 999px;
   background: transparent; box-shadow: inset 0 0 0 1px rgba(0,0,0,.16);
@@ -3409,7 +3740,13 @@ html[data-account-status="guest"] .share-active-only { display: none; }
   border-radius: 999px; background: #050505; color: #fff; font-family: var(--font-ui);
   font-size: 13px; letter-spacing: .12em; text-transform: uppercase; cursor: pointer;
 }
-.impact-note { color: var(--muted); font-size: 14px; letter-spacing: .04em; text-align: center; margin: 0 0 18px; }
+.impact-note { color: var(--muted); font-size: 14px; letter-spacing: .04em; text-align: center; margin: 0 0 8px; }
+/* Eco-points hero (your combined total) above the physical breakdown. */
+.impact-eco { display: flex; flex-direction: column; align-items: center; gap: 1px; margin: 0; }
+.impact-eco-val { font-family: var(--font-display); font-size: 46px; font-weight: 700; line-height: 1;
+  background-image: linear-gradient(124deg, var(--brand-a), var(--brand-b)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.impact-eco-lbl { color: var(--muted); font-size: 12px; letter-spacing: .14em; text-transform: uppercase; }
+.impact-eco-note { color: var(--muted); font-size: 12px; letter-spacing: .03em; text-align: center; margin: 7px 0 18px; opacity: .85; }
 .impact-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; width: min(100%, calc(var(--phone-w) - var(--page-pad) * 2)); }
 .impact-card { background: var(--row); border: 1px solid var(--box-stroke); background-clip: padding-box; box-shadow: var(--box-drop-shadow); border-radius: 18px; padding: 16px 6px; display: grid; gap: 4px; justify-items: center; }
 .impact-card-val { font-family: var(--font-display); font-size: 21px; font-weight: 700; letter-spacing: .01em; }
@@ -3434,6 +3771,8 @@ html[data-account-status="guest"] .share-active-only { display: none; }
 .share-value { font-size: 17px; letter-spacing: .08em; }
 .share-qr { display: flex; align-items: center; }
 .share-qr img { width: 52px; height: 52px; display: block; }
+.share-qr svg { width: 104px; height: 104px; display: block; border-radius: 12px; }
+.share-qr.share-qr-live { cursor: pointer; }
 .address-row { display: grid; grid-template-columns: 84px 1fr; align-items: center; gap: 12px; }
 .addr-k { color: var(--muted); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; }
 /* The form wrapper exists so iOS groups the fields for Contact AutoFill; it
@@ -3490,6 +3829,7 @@ html[data-account-status="guest"] .share-active-only { display: none; }
 /* ---- (14) purchase history + (15) linked products settings pages ---- */
 .purchases-content, .linked-content { align-content: start; }
 .purchase-list, .linked-list { width: 100%; display: grid; gap: 10px; }
+.purchases-empty { font-size: 14px; color: var(--muted); opacity: .6; letter-spacing: .04em; padding: 8px 2px; text-align: center; }
 .purchase-row { width: 100%; padding: 0 27px; }
 .purchase-plus { font-size: 22px; line-height: 1; color: #101010; transition: transform .3s ease; display: inline-block; }
 .purchase-item.open .purchase-plus { transform: rotate(45deg); }
@@ -3583,10 +3923,12 @@ html[data-account-status="guest"] .share-active-only { display: none; }
 .discount-row { margin-top: 10px; }
 .discount-field {
   width: 100%; min-width: 0; border: 0; background: transparent;
-  font-family: var(--font-ui); font-size: 16px; letter-spacing: .06em;
+  font-family: var(--font-ui); font-size: 15px; letter-spacing: .02em;
   color: var(--ink); padding: 0 0 0 1px;
 }
-.discount-field::placeholder { color: rgba(0,0,0,.42); letter-spacing: .06em; }
+/* Keep the full "referral code (optional)" placeholder (incl. closing bracket)
+   from being clipped by the field width next to the apply button. */
+.discount-field::placeholder { color: rgba(0,0,0,.42); letter-spacing: .02em; }
 .discount-field:focus { outline: none; }
 .discount-apply {
   border: 0; background: #050505; color: #fff; border-radius: 999px;
@@ -3661,7 +4003,39 @@ html[data-account-status="guest"] .share-active-only { display: none; }
 
 .gift-card-row { margin-top: 4px; }
 .gift-card-panel { max-height: 0; overflow: hidden; opacity: 0; transition: max-height .3s ease, opacity .3s ease, margin .3s ease; }
-.gift-card-panel.open { max-height: 360px; opacity: 1; margin-top: 2px; }
+.gift-card-panel.open { max-height: 760px; opacity: 1; margin-top: 2px; }
+
+/* Per-unit card summary in checkout: a thumbnail of the designed card + an edit
+   button that opens the full-screen designer. */
+.gift-card-summary { max-height: 0; overflow: hidden; opacity: 0; transition: max-height .3s ease, opacity .3s ease, margin .3s ease; display: flex; gap: 14px; align-items: center; }
+.gift-card-summary.open { max-height: 160px; opacity: 1; margin-top: 8px; }
+.gift-card-summary .gift-card-preview { flex: 0 0 76px; width: 76px; margin: 0; }
+.gcp-white { background-color: #fff; }
+.gcp-art { padding: 0; }
+.gcp-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.gcs-meta { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 9px; align-items: flex-start; }
+.gcs-text { font-size: 13px; color: var(--muted); line-height: 1.35; }
+.gcs-edit { padding: 9px 18px; border-radius: 999px; border: 1px solid var(--box-stroke); background: #fff; color: var(--ink); font-weight: 600; font-size: 13px; font-family: var(--font-ui); cursor: pointer; }
+.gcs-edit:active { transform: scale(.97); }
+
+/* Per-unit gift-card live preview (5:7, matches the web product card). */
+.gift-card-preview { aspect-ratio: 5 / 7; width: 132px; margin: 8px auto 12px; border-radius: 14px;
+  overflow: hidden; display: grid; place-items: center; padding: 12px 10px; box-sizing: border-box;
+  box-shadow: 0 10px 24px -16px rgba(5,5,5,.45); background-color: #fff; }
+.gift-card-preview .gcp-msg { max-width: 100%; max-height: 100%; overflow: hidden; }
+/* Design backgrounds — Linen · Bloom · Sage · Confetti. */
+.gcp-d0 { background-color: #efe7d6; background-image: repeating-linear-gradient(0deg, transparent 0 23px, rgba(90,68,40,.16) 23px 24px); }
+.gcp-d1 { background-color: #f0d8da; }
+.gcp-d2 { background-color: #d9e6da; }
+.gcp-d3 { background-color: #d4dae8; background-image: radial-gradient(circle, rgba(52,72,132,.30) 1.3px, transparent 1.8px); background-size: 12px 12px; }
+
+/* "Card style" font pills — Plain · Handwritten · Retro · Ransom. */
+.gift-fonts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 6px 0 2px; }
+.gift-font-opt { border: 1px solid var(--box-stroke); background: #fff; border-radius: 999px;
+  padding: 8px 3px; font-family: var(--font-ui); font-size: 10.5px; letter-spacing: .01em; color: var(--ink);
+  cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  transition: background .14s ease, color .14s ease, border-color .14s ease; }
+.gift-font-opt.sel { background-image: linear-gradient(124deg, var(--brand-a), var(--brand-b)); color: #fff; border-color: transparent; }
 .gift-card-panel textarea {
   width: 100%; box-sizing: border-box; min-height: 96px; resize: none;
   border-radius: 16px; border: 1px solid var(--box-stroke); background: #fff;
@@ -3925,7 +4299,7 @@ html[data-account-status="guest"] .share-active-only { display: none; }
 }
 .home-content::after {
   bottom: 0;
-  height: 38px;
+  height: 28px;   /* 25% shorter than 38px so it no longer washes over the "you" leaderboard row on open */
   background: linear-gradient(to top, #fff 0%, #fff 46%, rgba(255,255,255,.5) 76%, rgba(255,255,255,0) 100%);
 }
 
@@ -4092,13 +4466,15 @@ html.scan-stopping .screen[data-screen="scan"] .camera-viewport {
   transition: background-color .2s ease;
 }
 
+/* Processing pulse: opacity only (no scale), calm cadence — matches scanPulse.
+   The old scale()+0.52s version looked frantic, especially when a rotating
+   login QR briefly re-triggered the processing state. */
 @keyframes hugTargetLock {
-  0%   { transform: scale(1);   opacity: .85; }
-  45%  { transform: scale(.84); opacity: 1; }
-  100% { transform: scale(1);   opacity: .85; }
+  0%, 100% { opacity: 1; }
+  50%      { opacity: .35; }
 }
 .screen[data-screen="scan"].active[data-scan-state="processing"] .main-scan {
-  animation: hugTargetLock .52s ease-in-out infinite;
+  animation: hugTargetLock 1.2s ease-in-out infinite;
 }
 
 /* Activation sheet keyboard lift (single source of truth).
@@ -4232,8 +4608,9 @@ html.keyboard-open .scan-account-copy { display: none; }
 .card-msg { margin: 0; text-align: center; line-height: 1.15; word-break: break-word; color: var(--ink); max-width: 100%; white-space: pre-wrap; }
 .card-msg.style-plain { font-family: var(--font-ui); font-weight: 600; font-size: 26px; }
 .card-msg.style-hand { font-family: "HugHand", cursive; font-weight: 400; font-size: 40px; }
-.card-msg.style-arcade { font-family: "Press Start 2P", monospace; font-size: 13px; line-height: 1.8; }
-.card-msg.style-ransom { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 5px 2px; font-size: 26px; }
+.card-msg.style-arcade { font-family: "Press Start 2P", monospace; font-size: 13px; line-height: 1.7; }
+.card-msg.style-ransom { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 6px 9px; font-size: 26px; }
+.ransom-word { display: inline-flex; align-items: center; gap: 1px; }
 .ransom-ch { display: inline-block; padding: .04em .2em; border-radius: 3px; line-height: 1.05; box-shadow: 0 1px 3px rgba(5,5,5,.22); font-weight: 700; }
 .ransom-sp { display: inline-block; width: .42em; }
 .card-sign { position: absolute; right: 18px; bottom: 13px; font-size: 14px; color: var(--muted); }
@@ -4243,3 +4620,65 @@ html.keyboard-open .scan-account-copy { display: none; }
 .card-styles button { padding: 12px 10px; border-radius: 14px; border: 1px solid var(--box-stroke); background: var(--row); color: var(--muted); font-family: var(--font-ui); font-size: 14px; font-weight: 600; cursor: pointer; }
 .card-styles button.active { border-color: var(--ink); color: var(--ink); background: #fff; }
 .card-save { width: 100%; min-height: 52px; border-radius: 999px; border: 0; font-weight: 600; font-size: 16px; color: #fff; background-image: linear-gradient(124deg, var(--brand-a), var(--brand-b)); cursor: pointer; font-family: var(--font-ui); }
+
+/* ============================ Full-screen gift-card editor ============================ */
+/* plain-content is a grid with justify-items:center (shrink-wraps children) — the
+   editor needs its rows to span the full width instead. */
+.card-content { gap: 10px; padding-bottom: 32px; justify-items: stretch; }
+.card-content .plain-title, .card-content .ce-hint, .card-content .ce-card-size { text-align: center; }
+.ce-hint { font-size: 12.5px; line-height: 1.4; color: var(--muted); text-align: center; margin: 2px 6px 8px; }
+.ce-stage { display: flex; align-items: stretch; justify-content: center; gap: 8px; }
+.ce-side { flex: 0 0 54px; display: flex; flex-direction: column; align-items: center; }
+.ce-photo-btn { width: 54px; height: 70px; border-radius: 14px; border: 1.5px dashed var(--box-stroke); background: var(--row); color: var(--muted); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 10px; font-weight: 600; line-height: 1.1; text-align: center; cursor: pointer; font-family: var(--font-ui); }
+.ce-photo-btn svg { width: 22px; height: 22px; }
+.ce-photo-btn:active { transform: scale(.96); }
+.ce-sticker-col, .ce-side .ce-sticker-scroll { flex: 1 1 auto; align-self: stretch; }
+.ce-sticker-scroll { width: 54px; display: flex; flex-direction: column; align-items: center; gap: 8px; overflow-y: auto; max-height: 320px; padding: 2px; scrollbar-width: thin; }
+.ce-sticker-scroll::-webkit-scrollbar { width: 4px; } .ce-sticker-scroll::-webkit-scrollbar-thumb { background: rgba(0,0,0,.2); border-radius: 2px; }
+.ce-stk { flex: 0 0 auto; width: 46px; height: 46px; border-radius: 12px; border: 1px solid var(--box-stroke); background: #fff; padding: 7px; cursor: pointer; }
+.ce-stk svg { width: 100%; height: 100%; display: block; }
+.ce-stk:active { transform: scale(.92); }
+
+.ce-card-wrap { flex: 0 1 240px; min-width: 0; display: flex; flex-direction: column; align-items: center; }
+.ce-card { position: relative; width: 100%; max-width: 240px; aspect-ratio: 5 / 7; background: #fff; border: 1px solid var(--box-stroke); border-radius: 14px; box-shadow: 0 14px 34px -18px rgba(5,5,5,.5); overflow: hidden; }
+.ce-card-size { font-size: 10.5px; letter-spacing: .04em; color: var(--muted); margin: 9px 0 0; }
+
+/* The message types DIRECTLY on the white card — contenteditable, sizable, centred.
+   Same iOS gotcha as the username field: opt back into text selection. */
+.ce-msg {
+  position: absolute; left: 50%; top: 50%; width: 84%;   /* left/top are overridden inline (msgX/msgY) */
+  transform: translate(-50%,-50%) scale(var(--ms,1)); transform-origin: center center;
+  z-index: 5; outline: none;
+}
+/* Idle/selected: a draggable layer (no text selection, no scroll on touch). */
+.ce-msg:not([contenteditable="true"]) { cursor: grab; touch-action: none; -webkit-user-select: none; user-select: none; }
+.ce-msg.dragging { cursor: grabbing; }
+/* Edit mode only: real text editing + keyboard. */
+.ce-msg[contenteditable="true"] { cursor: text; -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
+.ce-msg.ce-empty:empty::before { content: attr(data-placeholder); color: var(--muted); opacity: .5; }
+.ce-msg.sel::after { content: ""; position: absolute; inset: -6px; border: 1.5px dashed rgba(5,5,5,.4); border-radius: 6px; pointer-events: none; }
+
+/* Photo + sticker layers — absolutely placed, draggable, sizable, rotatable. */
+.ce-layer { position: absolute; left: 50%; top: 32%; transform: translate(-50%,-50%) rotate(0deg) scale(1); transform-origin: center center; touch-action: none; cursor: grab; z-index: 2; }
+.ce-layer.dragging { cursor: grabbing; }
+.ce-layer.sticker { z-index: 6; }
+.ce-layer.sel::after { content: ""; position: absolute; inset: -5px; border: 1.5px dashed rgba(5,5,5,.4); border-radius: 6px; pointer-events: none; }
+.ce-layer > * { display: block; width: 100%; pointer-events: none; }
+.ce-layer img { border-radius: 8px; box-shadow: 0 3px 12px rgba(5,5,5,.11); background: #fff; }
+.ce-layer svg { width: 100%; height: auto; filter: drop-shadow(0 1px 2px rgba(5,5,5,.25)); }
+.ce-layer-x { position: absolute; top: -10px; right: -10px; z-index: 5; width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid #fff; background: #050505; color: #fff; font-size: 15px; line-height: 1; font-family: var(--font-ui); display: none; align-items: center; justify-content: center; cursor: pointer; pointer-events: auto; box-shadow: 0 1px 4px rgba(5,5,5,.35); padding: 0; transform-origin: center; }
+.ce-layer.sel > .ce-layer-x { display: flex; transform: scale(calc(1 / var(--ls,1))); }
+
+.ce-layerctl { border: 1px solid var(--box-stroke); border-radius: 14px; padding: 12px 14px; display: grid; gap: 10px; background: var(--row); margin: 4px 0 2px; }
+.ce-ctl-row { display: flex; align-items: center; gap: 12px; font-size: 13px; font-weight: 600; color: var(--ink); }
+.ce-ctl-row span { flex: 0 0 46px; }
+.ce-ctl-row input[type=range] { flex: 1 1 auto; accent-color: var(--brand-a); }
+.ce-remove { justify-self: start; padding: 7px 16px; border-radius: 999px; border: 1px solid var(--box-stroke); background: #fff; color: #c0322b; font-weight: 600; font-size: 13px; font-family: var(--font-ui); cursor: pointer; }
+.ce-label { margin: 6px 0 2px; }
+.ce-designs.gift-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 4px; }
+.ce-fonts { margin-bottom: 12px; }
+.ce-done { margin-top: 4px; }
+.ce-price-note { text-align: center; font-size: 12.5px; color: var(--muted); margin: 8px 0 2px; }
+.ce-price-note b { color: var(--ink); font-weight: 600; }
+/* Small inline price tag on the gift-wrap / gift-card labels. */
+.gift-price { text-transform: none; letter-spacing: normal; font-size: 12px; font-weight: 600; color: var(--ink); opacity: .8; margin-left: 4px; }
