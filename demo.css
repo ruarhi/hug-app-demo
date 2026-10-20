@@ -27,3 +27,15 @@
    would leave an empty app with no server behind it. */
 .screen[data-screen="settings"] .proto-row,
 .screen[data-screen="settings"] .account-controls { display: none !important; }
+
+/* Safari, inside the shop's 304px phone: the whole app is shrunk by a scale transform (--fit is
+   about .77 there), and Safari draws the edges of the layers inside it at fractional pixels.
+   - The leaderboard's scroll box drew a 1px black line along its top edge, just above
+     "LEADERBOARD" (owner, 2026-10-20, seen in Safari). The head's band already spans that edge;
+     paint it white (the page is white there anyway), so the seam is covered.
+   - The top row's icons moved up and down a pixel as Safari redrew their layers. Keep them in
+     the page's own layer, so they are drawn in the same place every time.
+   Demo only: on a phone the app runs at full size, with no scale. */
+.screen[data-screen="home"] .leader-head::before { background-color: #fff; }
+.impact-grid, .impact-viewport, .impact-panel, .impact-item, .impact-icon,
+.points-block { will-change: auto !important; }
