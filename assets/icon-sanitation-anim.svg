@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 486 552" fill="none">
+<g id="hugs-toilet" fill="none" stroke="#000" stroke-width="10.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M105 78V70Q105 62 113 62H125Q133 62 133 70V78"/>
+    <path d="M84 78H152Q174 78 174 100V278Q174 300 152 300H89Q67 300 66 278L62 100Q62 78 84 78Z"/>
+    <path d="M63 110H174"/>
+    <path d="M190 300V290Q190 272 208 272H408Q433 272 433 300H174"/>
+    <path d="M433 300C429 366 392 404 339 418C301 429 268 426 241 416"/>
+    <path d="M84 300V326C84 350 107 364 119 389C137 417 126 458 116 511H353L339 418"/>
+  </g>
+</svg>

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" aria-hidden="true" fill="none" stroke="#000000" stroke-width="12.8" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10">
+<g transform="translate(260 300)"><g><animateTransform attributeName="transform" type="scale" dur="3.8s" repeatCount="indefinite" calcMode="linear" keyTimes="0;0.62;0.74;0.88;1" values="1;1;1.045;1;1"/><g transform="translate(-260 -300)">
+<path d="M262 186C250 130 205 100 158 110C108 124 92 184 106 240C124 322 205 392 242 448C252 464 268 464 278 448C315 392 396 322 412 242C428 184 412 124 362 110C315 100 272 130 260 190"/>
+<path d="M130 290H186L210 250L240 352L276 196L302 318L320 290H390" pathLength="1" stroke-dasharray="1 2"><animate attributeName="stroke-dashoffset" dur="3.8s" repeatCount="indefinite" calcMode="linear" keyTimes="0;0.12;0.42;0.58;0.88;1" values="0;0;-1;-2;-3;-3"/></path>
+</g></g></g>
+</svg>

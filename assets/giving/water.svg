@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 26 26" fill="none">
+<!-- Small-size variant of src/assets/icon-water.svg for the giving list: ink 22 px tall in a 26 px box, stroke 0.517 CSS px. Only viewBox, transform and stroke-width differ from the source. -->
+<g transform="translate(1.266484 -0.511688) scale(0.048386)">
+  <title id="title">Tap with longer flowing water</title>
+  <desc id="desc">A rounded black outline tap with three long wavy water lines, on a transparent background.</desc>
+  <g id="tap" stroke="#000" stroke-width="10.680412" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M213 111V169 M249 111V169"/>
+    <path d="M130 66H210Q231 49 252 66H332C359 66 359 108 332 108H252Q231 121 210 108H130C103 108 103 66 130 66Z"/>
+    <rect x="54" y="180" width="66" height="114" rx="19"/>
+    <path d="M120 204H170C185 181 204 168 231 168S277 181 292 204H390C413 204 431 222 431 245V336Q431 344 423 344H372Q364 344 364 336V272H292C277 295 258 308 231 308S185 295 170 272H120"/>
+    <g id="water">
+      <path d="M376 365C355 385 393 401 376 423S359 456 376 476Q385 487 376 501"/>
+      <path d="M398 365C377 385 415 401 398 423S381 456 398 476Q407 487 398 501"/>
+      <path d="M420 365C399 385 437 401 420 423S403 456 420 476Q429 487 420 501"/>
+    </g>
+  </g>
+</g>
+</svg>

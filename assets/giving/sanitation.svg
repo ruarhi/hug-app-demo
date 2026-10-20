@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 26 26" fill="none">
+<!-- Small-size variant of src/assets/icon-sanitation.svg for the giving list: ink 22 px tall in a 26 px box, stroke 0.517 CSS px. Only viewBox, transform and stroke-width differ from the source. -->
+<g transform="translate(1.171085 -0.692865) scale(0.047794)">
+<title id="title">Simple side-view toilet</title>
+<desc id="desc">A simple toilet with a rounded cistern, top flush button, slim curved seat, rounded bowl and plain pedestal. Black outline on a transparent background.</desc>
+  <g id="toilet" fill="none" stroke="#000" stroke-width="10.812715" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M105 78V70Q105 62 113 62H125Q133 62 133 70V78"/>
+    <path d="M84 78H152Q174 78 174 100V278Q174 300 152 300H89Q67 300 66 278L62 100Q62 78 84 78Z"/>
+    <path d="M63 110H174"/>
+    <path d="M190 300V290Q190 272 208 272H408Q433 272 433 300H174"/>
+    <path d="M433 300C429 366 392 404 339 418C301 429 268 426 241 416"/>
+    <path d="M84 300V326C84 350 107 364 119 389C137 417 126 458 116 511H353L339 418"/>
+  </g>
+</g>
+</svg>

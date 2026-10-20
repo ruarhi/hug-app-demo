@@ -15,6 +15,9 @@
    ============================================================================= */
 
 :root {
+  /* the HUG tick — the house hand-drawn mark, as a MASK rather than a stroked
+     polyline, so any fill shows through the drawn shape itself. */
+  --tick: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14.2 16.2'><path fill='black' d='M13.26 0.1 C13.45 0.06 13.56 0.08 13.68 0.1 C13.79 0.12 13.9 0.16 13.97 0.21 C14.03 0.26 14.08 0.33 14.09 0.4 C14.1 0.48 14.46 0.03 14.04 0.67 C13.62 1.31 12.31 3.08 11.57 4.24 C10.83 5.4 10.23 6.43 9.59 7.63 C8.96 8.83 8.2 10.47 7.76 11.45 C7.31 12.43 7.17 12.84 6.91 13.52 C6.65 14.2 6.36 15.16 6.21 15.54 C6.06 15.93 6.1 15.75 6.01 15.83 C5.93 15.91 5.82 15.97 5.7 16.02 C5.59 16.06 5.45 16.09 5.31 16.1 C5.17 16.11 5 16.11 4.86 16.07 C4.72 16.03 4.79 16.3 4.46 15.87 C4.14 15.44 3.4 14.19 2.89 13.5 C2.38 12.8 1.84 12.2 1.41 11.7 C0.98 11.21 0.53 10.76 0.32 10.52 C0.11 10.29 0.19 10.35 0.15 10.28 C0.12 10.2 0.09 10.16 0.11 10.07 C0.13 9.98 0.19 9.84 0.29 9.75 C0.4 9.65 0.57 9.56 0.73 9.52 C0.88 9.47 1.09 9.46 1.24 9.47 C1.39 9.49 1.46 9.5 1.61 9.6 C1.77 9.7 1.9 9.78 2.17 10.07 C2.44 10.35 2.77 10.7 3.22 11.31 C3.67 11.92 4.58 13.3 4.88 13.73 C5.19 14.15 5.01 13.85 5.06 13.86 C5.12 13.87 5.17 13.85 5.22 13.8 C5.27 13.75 5.19 14.01 5.36 13.58 C5.54 13.15 5.95 12.02 6.29 11.21 C6.63 10.39 7.03 9.49 7.4 8.71 C7.77 7.92 8.17 7.13 8.52 6.48 C8.86 5.82 9.05 5.47 9.47 4.76 C9.89 4.06 10.61 2.9 11.04 2.24 C11.47 1.59 11.78 1.15 12.03 0.84 C12.29 0.52 12.36 0.47 12.56 0.35 C12.77 0.23 13.08 0.14 13.26 0.1 Z'/></svg>");
   --ink: #050505;
   --muted: #343434;
   --row: rgba(235, 235, 235, .5);
@@ -32,6 +35,10 @@
   --bag-icon-fade-ms: 240ms;
   --account-motion-ms: 760ms;
   --account-exit-ms: 360ms;
+  /* The bars' icons, every page switch (owner, 2026-10-17: "more of an s curve fade in/out ...
+     within 0.5 secs for all across the board"). app.js chromeEaseFrom uses the same pair. */
+  --chrome-ease: cubic-bezier(.45, 0, .55, 1);
+  --chrome-ease-ms: 450ms;
   --phone-w: 393px;
   --phone-h: 852px;
   /* iOS/Android safe areas; 0 on devices/browsers without notches, so the
@@ -52,6 +59,29 @@
   --history-window-height: 340px;
   --leader-list-bottom-pad: 24px;
   --history-list-bottom-pad: 24px;
+
+  /* ---- hug design language ("Held") — named scale ------------------------
+     Additive layer. The brand vars above remain the source of truth; these
+     name the system so new surfaces (and the admin app) stay consistent.
+     Full spec: docs/design-language/HUG_DESIGN_LANGUAGE.md ------------------ */
+  --brand-gradient: linear-gradient(124deg, var(--brand-a) 0%, var(--brand-b) 100%);
+  /* space — 8-based rhythm (--page-pad 38px is the screen gutter) */
+  --space-1: 4px;  --space-2: 8px;  --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-7: 32px; --space-8: 38px;
+  /* radius — soft geometry */
+  --radius-pill: 999px; --radius-card: 18px; --radius-card-lg: 22px;
+  --radius-control: 14px; --radius-chip: 6px; --radius-hair: 2px;
+  /* elevation — depth by softness, not lines */
+  --elev-1: var(--box-drop-shadow);
+  --elev-2: 0 18px 40px -26px rgba(5, 5, 5, .28);
+  --elev-sheet: 0 30px 70px -28px rgba(0, 0, 0, .30);
+  --blur-chrome: 7px; --blur-scrim: 18px;
+  /* motion — brand easing + a functional tier for repeated work */
+  --ease-brand: cubic-bezier(.22, .82, .2, 1);
+  --dur-micro: 90ms; --dur-fast: 140ms; --dur-ui: 240ms;
+  /* semantic status — kept separate from the brand accent */
+  --ok: #2f7a3c;      --ok-bg: var(--row-approved);
+  --pending: #b4485a; --pending-bg: var(--row-pending);
 }
 
 * {
@@ -241,7 +271,7 @@ button {
 
 .phone.bag-scan-switch .screen[data-screen="bag"] .top > :not(.logo) {
   opacity: .26 !important;
-  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1) !important;
+  transition: opacity var(--bag-exit-ms) var(--chrome-ease) !important;
 }
 
 /* Bag -> settings: fade the bag screen chrome (incl. the bag icon) to the settings
@@ -250,13 +280,13 @@ button {
 .phone.bag-to-settings-switch .screen[data-screen="bag"].active .top > :not(.logo),
 .phone.bag-to-settings-switch .screen[data-screen="bag"].active .top .bag-button {
   opacity: .22 !important;
-  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1) !important;
+  transition: opacity var(--bag-exit-ms) var(--chrome-ease) !important;
 }
 
 .phone.bag-to-scan-switch .screen[data-screen="bag"] .top .bag-button,
 .phone.bag-to-qr-switch .screen[data-screen="bag"] .top .bag-button {
   opacity: .26 !important;
-  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1) !important;
+  transition: opacity var(--bag-exit-ms) var(--chrome-ease) !important;
 }
 
 .phone.bag-to-qr-switch .screen[data-screen="qr"].active .bottom-nav {
@@ -266,7 +296,7 @@ button {
 
 .phone.bag-to-qr-switch .screen[data-screen="qr"].active .bottom-nav button {
   opacity: .26 !important;
-  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1) !important;
+  transition: opacity var(--bag-exit-ms) var(--chrome-ease) !important;
 }
 
 .phone.bag-to-qr-switch .screen[data-screen="qr"].active .bottom-nav button[data-go="qr"] {
@@ -277,7 +307,7 @@ button {
 .phone.bag-to-settings-switch.bag-closing .screen[data-screen="bag"].active .bottom-nav button[data-go="settings"],
 .phone.bag-to-qr-switch.bag-closing .screen[data-screen="bag"].active .bottom-nav button[data-go="qr"] {
   opacity: 1 !important;
-  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1) !important;
+  transition: opacity var(--bag-exit-ms) var(--chrome-ease) !important;
 }
 
 /* bag -> settings: spin the HELD settings gear on the bag nav during the close, so the
@@ -292,13 +322,13 @@ button {
 .phone.bag-from-scan-switch.nav-switching .screen[data-screen="bag"] .top > :not(.logo),
 .phone.bag-from-scan-switch .screen[data-screen="bag"] .top > :not(.logo) {
   opacity: .26 !important;
-  transition: opacity var(--bag-motion-ms) cubic-bezier(.22, .82, .2, 1) !important;
+  transition: opacity var(--chrome-ease-ms) var(--chrome-ease) !important;
 }
 
 .phone.bag-from-scan-switch.nav-switching .screen[data-screen="bag"] .top .bag-button,
 .phone.bag-from-scan-switch .screen[data-screen="bag"] .top .bag-button {
   opacity: 1 !important;
-  transition: opacity var(--bag-motion-ms) cubic-bezier(.22, .82, .2, 1) !important;
+  transition: opacity var(--chrome-ease-ms) var(--chrome-ease) !important;
 }
 
 .screen.quick-fade-enter {
@@ -311,6 +341,24 @@ button {
   opacity: 1;
   animation: quickFadeOut var(--quick-fade-ms, .16s) ease forwards;
   z-index: 3;
+}
+
+/* Quick fade with the bars shared (app.js chromeEaseFrom adds .chrome-shared, owner 2026-10-17).
+   The page coming in is drawn at once, its bars with it, their icons easing from the old page's
+   values; only what lies between the bars fades in, over the page going out (transparent
+   background, so that one still shows beneath). The leaving page's bars go at once: the same
+   icons at the same values are drawn above them, so nothing changes there except the ease.
+   Before, both whole pages cross-faded, and the icons jumped. */
+.phone.chrome-shared .screen.quick-fade-enter {
+  opacity: 1;
+  animation: none;
+  background: transparent;
+}
+.phone.chrome-shared .screen.quick-fade-enter > :not(.top):not(.bottom-nav) {
+  animation: quickFadeIn var(--quick-fade-ms, .16s) ease both;
+}
+.phone.chrome-shared .screen.quick-fade-leave > :is(.top, .bottom-nav) {
+  visibility: hidden;
 }
 
 @keyframes quickFadeIn {
@@ -349,18 +397,29 @@ button {
 }
 
 .top > :not(.logo) {
-  transition: opacity .28s ease;
+  transition: opacity var(--chrome-ease-ms) var(--chrome-ease);
 }
 
 @keyframes balanceIntroPulse {
   0%, 100% { opacity: 1; }
   50% { opacity: .3; }
 }
+.balance[data-len="9"] { font-size: 20px; }                 /* £1,000.00 – £9,999.99 */
+.balance[data-len="10"] { font-size: 18px; }                /* £10,000.00 – £99,999.99 */
+.balance[data-len="11"], .balance[data-len="12"] { font-size: 16px; }
 .balance.balance-intro-pulse {
   animation: balanceIntroPulse 1.65s ease-in-out 2;
 }
 .balance {
   grid-column: 1;
+  /* The gradient is painted inside this box only (background-clip: text), so any digit past the
+     box was drawn in no colour at all: "£210.00" showed as "£210.0". Size the box to the figure
+     instead of the 82px track — never smaller than the track, so small amounts lay out exactly as
+     before — and step the font down from £1,000 up (data-len, set in app.js), where the figure
+     would otherwise run into the logo 108px away. */
+  justify-self: start;
+  min-width: 82px;
+  width: max-content;
   padding-top: 16.9px;
   font-size: 23px;
   font-weight: 600;
@@ -517,6 +576,8 @@ img {
   min-height: 0;
   padding: 0 var(--page-pad);
   overflow-y: auto;
+  overflow-x: hidden;          /* never scroll sideways: overflow-y:auto alone makes overflow-x compute to auto,
+                                  so long translated labels would create a stray horizontal scrollbar. */
   overscroll-behavior-y: auto;
   -webkit-overflow-scrolling: touch;
   position: relative;
@@ -574,12 +635,58 @@ img {
 }
 
 .impact-grid {
+  position: relative;
+  margin-top: 9px;
+  text-align: center;
+  touch-action: none;   /* a drag here moves the row (see impactRow in app.js), never the page */
+}
+
+/* The row is a two-panel carousel (planet / people). Both panels share one grid cell, so the
+   row is as tall as the taller panel; JS slides them with transforms. The hidden panel is
+   visibility:hidden (and aria-hidden) once settled. */
+.impact-viewport {
+  display: grid;
+  overflow: hidden;
+  /* Full-bleed: the row runs to the screen edges, so a swipe slides icons off the SCREEN instead
+     of slicing them against an inner box. Each panel puts the page gutter back inside itself, so
+     at rest nothing moves, and mid-swipe the two sets sit two gutters apart — a wider gap than
+     the even spacing within a set (owner, 2026-10-10). */
+  margin: 0 calc(-1 * var(--page-pad));
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  contain: layout paint;
+}
+.impact-panel {
+  grid-area: 1 / 1;
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   column-gap: 26px;
-  margin-top: 9px;
-  text-align: center;
+  padding: 0 var(--page-pad);
+  will-change: transform;
 }
+.impact-panel[aria-hidden="true"] { visibility: hidden; }
+.impact-item { min-width: 0; }
+/* SPEC §1.4: a switched-off cause takes no room — the row stays exactly three wide. */
+.impact-item[hidden] { display: none; }
+.impact-dots {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 9.5px);   /* owner 2026-10-10: +50% air under the values (visible gap 7px -> 10.5px) */
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  pointer-events: none;
+}
+.impact-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(8, 8, 8, .2);
+  transition: background-color 200ms ease;
+}
+.impact-dot.is-on { background: rgba(8, 8, 8, .75); }
 
 .impact-item {
   display: grid;
@@ -631,12 +738,42 @@ img {
   max-height: 66px;
 }
 
+.impact-icon.water,
+.impact-icon.food,
+.impact-icon.vitamin_a,
+.impact-icon.sanitation {
+  width: 72px;
+}
+
+.impact-icon.water .icon-img,
+.impact-icon.food .icon-img,
+.impact-icon.vitamin_a .icon-img,
+.impact-icon.sanitation .icon-img {
+  width: 68px;
+  height: 68px;
+  max-width: 68px;
+  max-height: 68px;
+}
+
 .impact-value {
   font-size: 23px;
   font-weight: 400;
   letter-spacing: .19em;
   line-height: 1;
   white-space: nowrap;
+}
+
+/* unit after a value ("68" + "days", "1250" + "kg"): about two thirds of the value, so it reads
+   at a glance but is still the junior partner. JS also shrinks a value that still would not
+   fit its column (fitValue), which is what keeps it inside at 320px and in de/ar. */
+.impact-value.no-unit {
+  padding-left: .19em;   /* = letter-spacing: balances the gap that trails the last digit */
+}
+
+.impact-unit {
+  font-size: .8em;
+  letter-spacing: .04em;
+  margin-left: .3em;
 }
 
 .points-block {
@@ -654,6 +791,13 @@ img {
   line-height: 1;
   transform: translateX(.16em);
 }
+
+/* A figure we do not know yet renders blank, never as a guessed 0 — but blank text has no line
+   box, so the eco points hero collapsed to nothing and everything under it (the leaderboard)
+   rode up, then dropped ~90px when the number landed. A zero-width space keeps the exact line
+   height of a real figure, at every breakpoint, without drawing anything. Same for the pill. */
+.points:empty::before,
+.balance:empty::before { content: "\200b"; }
 
 .points {
   margin-top: 15px;
@@ -830,6 +974,36 @@ img {
 /* Shown under a populated board when the viewer isn't ranked yet. */
 .leader-empty--footer { padding: 15px 14px 7px; margin-top: 4px; border-top: 1px solid rgba(5,5,5,.06); opacity: .5; }
 
+/* "couldn't load — retry". Deliberately NOT styled like an empty state: a failed
+   read must be visibly different from "you have nothing", or the app is telling a
+   customer their account is empty when it simply could not reach the server. */
+.load-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 18px 14px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: .06em;
+}
+.load-error-msg { opacity: .62; }
+.load-error-retry {
+  appearance: none;
+  border: 1px solid rgba(5,5,5,.18);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: .1em;
+  padding: 5px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.load-error-retry:active { background: rgba(5,5,5,.06); }
+/* Summary cells that are showing "—" rather than a figure we can stand behind. */
+.account-main[data-balance-state="unknown"] .money-card-value { opacity: .45; }
+
 .bottom-nav {
   position: relative;
   z-index: 60;
@@ -841,25 +1015,6 @@ img {
   background: #fff;
   isolation: isolate;
   pointer-events: auto;
-}
-
-.bottom-nav::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: calc(var(--bottom-feather-h) * -1);
-  height: var(--bottom-feather-h);
-  background: linear-gradient(
-    to top,
-    rgba(255,255,255,1) 0%,
-    rgba(255,255,255,.96) 30%,
-    rgba(255,255,255,.72) 58%,
-    rgba(255,255,255,.32) 82%,
-    rgba(255,255,255,0) 100%
-  );
-  pointer-events: none;
-  z-index: 2;
 }
 
 /* Lift scrolling content above the 30px bottom feather so the last item (e.g. place-order)
@@ -878,7 +1033,7 @@ img {
   justify-self: center;
   opacity: .92;
   transform: translateX(0);
-  transition: opacity .28s ease, transform .72s cubic-bezier(.18, .9, .16, 1);
+  transition: opacity var(--chrome-ease-ms) var(--chrome-ease), transform .72s cubic-bezier(.18, .9, .16, 1);
   position: relative;
   z-index: 3;
   pointer-events: auto;
@@ -962,7 +1117,7 @@ img {
 
 .screen[data-screen="bag"] .top > :not(.logo) {
   opacity: .88;
-  transition: opacity var(--bag-motion-ms) cubic-bezier(.22, .82, .2, 1);
+  transition: opacity var(--chrome-ease-ms) var(--chrome-ease);
 }
 
 .screen[data-screen="bag"] .top::after {
@@ -1003,10 +1158,6 @@ img {
   opacity: .26;
 }
 
-.screen[data-screen="bag"].active .bottom-nav::before {
-  opacity: 0;
-}
-
 .screen[data-screen="checkout"].active .top > :not(.logo) {
   opacity: .26;
 }
@@ -1030,25 +1181,7 @@ img {
 
 .screen[data-screen="account"] .top > :not(.logo) {
   opacity: .88;
-  transition: opacity var(--account-motion-ms) cubic-bezier(.22, .82, .2, 1);
-}
-
-.screen[data-screen="account"] .top::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: calc(100% - 2px);
-  height: 14px;
-  background: linear-gradient(
-    to bottom,
-    rgba(255,255,255,1) 0%,
-    rgba(255,255,255,.92) 34%,
-    rgba(255,255,255,.58) 70%,
-    rgba(255,255,255,0) 100%
-  );
-  pointer-events: none;
-  z-index: 0;
+  transition: opacity var(--chrome-ease-ms) var(--chrome-ease);
 }
 
 .screen[data-screen="account"] .top > * {
@@ -1175,7 +1308,7 @@ img {
 
 .phone.bag-closing .screen[data-screen="home"].active .bottom-nav button {
   opacity: .26;
-  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1);
+  transition: opacity var(--bag-exit-ms) var(--chrome-ease);
 }
 
 .phone.bag-closing .screen[data-screen="bag"].active .top {
@@ -1186,12 +1319,12 @@ img {
 
 .phone.bag-closing .screen[data-screen="bag"].active .top > :not(.logo) {
   opacity: .26;
-  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1);
+  transition: opacity var(--bag-exit-ms) var(--chrome-ease);
 }
 
 .phone.bag-closing .screen[data-screen="bag"].active .top .bag-button {
   opacity: 1;
-  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1);
+  transition: opacity var(--bag-exit-ms) var(--chrome-ease);
 }
 
 .phone.bag-closing .screen[data-screen="bag"].active .bottom-nav {
@@ -1302,7 +1435,7 @@ img {
 
 .phone.bag-closing.bag-home-reveal .screen[data-screen="home"].active .bottom-nav button {
   opacity: .92;
-  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1);
+  transition: opacity var(--bag-exit-ms) var(--chrome-ease);
 }
 
 .phone.bag-closing.bag-home-reveal .screen[data-screen="bag"].active .top {
@@ -1311,7 +1444,7 @@ img {
 
 .phone.bag-closing.bag-home-reveal .screen[data-screen="bag"].active .top > :not(.logo) {
   opacity: .88;
-  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1);
+  transition: opacity var(--bag-exit-ms) var(--chrome-ease);
 }
 
 .phone.bag-closing.bag-home-reveal .screen[data-screen="bag"].active .bottom-nav {
@@ -1321,7 +1454,7 @@ img {
 
 .phone.bag-closing.bag-home-reveal .screen[data-screen="bag"].active .bottom-nav button {
   opacity: .92;
-  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1);
+  transition: opacity var(--bag-exit-ms) var(--chrome-ease);
 }
 
 /* Bag close to non-home targets (e.g. scan/qr): fade the bag layer away as the target is revealed underneath. */
@@ -1373,7 +1506,7 @@ img {
 
 .phone.account-closing .screen[data-screen="home"].active .bottom-nav button {
   opacity: .26;
-  transition: opacity var(--account-exit-ms) cubic-bezier(.22, .82, .2, 1);
+  transition: opacity var(--account-exit-ms) var(--chrome-ease);
 }
 
 .phone.account-closing .screen[data-screen="account"].active {
@@ -1429,12 +1562,12 @@ img {
 
 .phone.account-closing .screen[data-screen="account"].active .top > :not(.logo) {
   opacity: .26;
-  transition: opacity var(--account-exit-ms) cubic-bezier(.22, .82, .2, 1);
+  transition: opacity var(--account-exit-ms) var(--chrome-ease);
 }
 
 .phone.account-closing .screen[data-screen="account"].active .top .balance {
   opacity: 1;
-  transition: opacity var(--account-exit-ms) cubic-bezier(.22, .82, .2, 1);
+  transition: opacity var(--account-exit-ms) var(--chrome-ease);
 }
 
 .phone.account-closing .screen[data-screen="account"].active .bottom-nav {
@@ -1445,7 +1578,7 @@ img {
 
 .phone.account-closing .screen[data-screen="account"].active .bottom-nav button {
   opacity: .26;
-  transition: opacity var(--account-exit-ms) cubic-bezier(.22, .82, .2, 1);
+  transition: opacity var(--account-exit-ms) var(--chrome-ease);
 }
 
 .phone.account-closing.account-home-reveal .screen[data-screen="account"].active::before {
@@ -1470,7 +1603,7 @@ img {
 
 .phone.account-closing.account-home-reveal .screen[data-screen="home"].active .bottom-nav button {
   opacity: .92;
-  transition: opacity var(--account-exit-ms) cubic-bezier(.22, .82, .2, 1);
+  transition: opacity var(--account-exit-ms) var(--chrome-ease);
 }
 
 .phone.account-closing.account-home-reveal .screen[data-screen="account"].active .top {
@@ -1479,12 +1612,12 @@ img {
 
 .phone.account-closing.account-home-reveal .screen[data-screen="account"].active .top > :not(.logo) {
   opacity: .88;
-  transition: opacity var(--account-exit-ms) cubic-bezier(.22, .82, .2, 1);
+  transition: opacity var(--account-exit-ms) var(--chrome-ease);
 }
 
 .phone.account-closing.account-home-reveal .screen[data-screen="account"].active .top .balance {
   opacity: 1;
-  transition: opacity var(--account-exit-ms) cubic-bezier(.22, .82, .2, 1);
+  transition: opacity var(--account-exit-ms) var(--chrome-ease);
 }
 
 .phone.account-closing.account-home-reveal .screen[data-screen="account"].active .bottom-nav {
@@ -1494,7 +1627,7 @@ img {
 
 .phone.account-closing.account-home-reveal .screen[data-screen="account"].active .bottom-nav button {
   opacity: .92;
-  transition: opacity var(--account-exit-ms) cubic-bezier(.22, .82, .2, 1);
+  transition: opacity var(--account-exit-ms) var(--chrome-ease);
 }
 
 .screen[data-screen="settings"].active .bottom-nav button:not(:first-child) {
@@ -2005,6 +2138,12 @@ html.scan-camera-active .phone::before {
   opacity: 0;
 }
 
+/* A swipe off the scan screen (app.js applyPullX adds .scan-cam-veil): the phone's white fades
+   back over the live camera in 140 ms, so the screens slide over white like anywhere else; the
+   camera, a native layer, cannot move with them. A swipe that springs back fades it away again. */
+html.scan-camera-active .phone { transition: background-color .14s ease; }
+html.scan-camera-active.scan-cam-veil .phone { background-color: #fff !important; }
+
 html.scan-camera-active .screen[data-screen="scan"].active .top,
 html.scan-camera-active .screen[data-screen="scan"].active .bottom-nav {
   background: #fff;
@@ -2159,6 +2298,8 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
   line-height: 1;
   text-align: center;
   transform: translateX(.14em);
+  max-width: 100%;              /* long translated titles (e.g. EINSTELLUNGEN, CONFIGURAÇÕES) wrap / break */
+  overflow-wrap: anywhere;      /* instead of overflowing the content box and getting clipped. */
 }
 
 .profile-icon {
@@ -2226,14 +2367,13 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
   opacity: 0; pointer-events: none;
 }
 .username-tick svg { width: 100%; height: 100%; display: block; }
-.username-tick svg path {
-  fill: none; stroke: #16a34a; stroke-width: 3;
-  stroke-linecap: round; stroke-linejoin: round;
-  stroke-dasharray: 26; stroke-dashoffset: 26;
-}
+.username-tick svg path { fill: #16a34a; stroke: none; }
+/* The mark is a filled outline, not a stroked line, so a dash offset cannot draw it.
+   A left-to-right wipe reveals it the way a pen would: short arm first, then the long one. */
+.username-tick svg { clip-path: inset(0 100% 0 0); }
 .profile-name-wrap.tick-show .username-tick { animation: tickFlash 1.4s ease forwards; }
-.profile-name-wrap.tick-show .username-tick svg path { animation: tickDraw .42s .08s ease forwards; }
-@keyframes tickDraw { to { stroke-dashoffset: 0; } }
+.profile-name-wrap.tick-show .username-tick svg { animation: tickDraw .42s .08s ease forwards; }
+@keyframes tickDraw { to { clip-path: inset(0 0 0 0); } }
 @keyframes tickFlash {
   0%   { opacity: 0; transform: translateY(-50%) scale(.7); }
   14%  { opacity: 1; transform: translateY(-50%) scale(1); }
@@ -2289,7 +2429,8 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
   width: 100%;
   min-height: 54px;
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;   /* minmax(0,..) lets the label column shrink so long
+                                                   translated labels wrap instead of widening the row. */
   align-items: center;
   gap: 16px;
   border-radius: 999px;
@@ -2300,6 +2441,7 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
   font-weight: 400;
   letter-spacing: .16em;
   text-align: left;
+  overflow-wrap: anywhere;                       /* wrap (and break) long labels rather than overflow. */
   position: relative;
   z-index: 12;
   pointer-events: auto;
@@ -2839,6 +2981,25 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
   .checkout-discount span:last-child { justify-self: end; text-align: right; }
   .checkout-discount[hidden] { display: none; }
 
+/* Shop credit: "Use my balance" switch + the account note. */
+.spend-note[hidden], .spend-note-line[hidden] { display: none; }
+.credit-switch { position: relative; display: inline-block; width: 40px; height: 24px; min-width: 40px; flex: 0 0 40px; vertical-align: middle; }
+.credit-switch input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; margin: 0; cursor: pointer; z-index: 2; }
+.credit-track { position: absolute; inset: 0; box-sizing: border-box; border-radius: 999px; background: #d4d7dc; transition: background-color .16s ease; pointer-events: none; }
+.credit-track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .16s ease; }
+.credit-row.is-disabled { cursor: default; }
+.credit-row.is-disabled .credit-switch input { cursor: default; pointer-events: none; }
+.credit-row.is-disabled .credit-track, .credit-row.is-disabled .gift-label-text { opacity: .45; }
+.credit-switch input:checked + .credit-track { background: #2f7a3c; }
+.credit-switch input:checked + .credit-track::after { transform: translateX(16px); }
+/* .checkout-content .simple-row span:first/last-child (above) right-aligns and pads any lone or last
+   span, which would shrink-wrap the switch track to 1px and push the label across the row. */
+.checkout-content .credit-row span.row-left { justify-self: start; padding: 0; letter-spacing: inherit; }
+.checkout-content .credit-row .credit-switch span.credit-track { justify-self: stretch; width: 100%; height: 100%; padding: 0; }
+.account-main .spend-note { grid-column: 1 / -1; }
+.spend-note { width: 100%; box-sizing: border-box; padding: 2px 18px 0; font-size: 13px; line-height: 1.4; color: var(--muted); }
+.spend-note-line { display: grid; grid-template-columns: 1fr auto; margin-top: 4px; font-weight: 600; color: #2f7a3c; }
+
 .pay-button {
   width: 100%;
   height: 54px;
@@ -2887,8 +3048,12 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
 }
 
 .account-main {
-  width: min(100%, calc(var(--phone-w) - (var(--page-pad) * 2)));
-  margin-inline: auto;
+  /* The balance block (boxes, money rows, note) runs wider than the screen gutter: 24px a side
+     instead of --page-pad (38px), so a four-figure amount and a long label share one row.
+     (16px on 2026-10-10 was too tight to the screen's edge; owner, 2026-10-16: 50% more.) */
+  --balance-pad: 24px;
+  width: calc(100% + (var(--page-pad) - var(--balance-pad)) * 2);
+  margin-inline: calc(var(--balance-pad) - var(--page-pad));
   display: grid;
   grid-template-columns: repeat(2, 1fr);  /* two even top cards: QR scans + Referrals */
   gap: 10px;
@@ -2901,7 +3066,7 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
   background: var(--row);
   padding: 10px 12px;
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto;
   align-content: center;
   justify-items: center;
@@ -2914,8 +3079,9 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
 .account-main .simple-row.wide {
   grid-column: 1 / -1;
   min-height: 46px;
-  padding: 7px 16px;
-  grid-template-columns: 1fr auto;
+  padding: 7px 12px;   /* was 16px: room for "CASHBACK DEPOSITED" on one line (owner, 2026-10-10) */
+  column-gap: 8px;                 /* label | chevron | amount stay on ONE row, close together */
+  grid-template-columns: minmax(0, 1fr) auto;
   grid-template-rows: 1fr;
   align-items: center;
   justify-items: initial;
@@ -2924,14 +3090,17 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
 
 .account-main .simple-row.wide .money-card-label {
   width: auto;
+  min-width: 0;
   justify-self: start;
   text-align: left;
+  white-space: nowrap;             /* a balance label never wraps; balanceFit shrinks it if it must */
 }
 
 .account-main .simple-row.wide .money-card-value {
   width: auto;
   justify-self: end;
   text-align: right;
+  white-space: nowrap;   /* an amount never breaks; a long one wraps the label instead */
 }
 
 .account-main .simple-row.compact {
@@ -3184,7 +3353,7 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
   background: var(--row-approved);
   border-color: var(--row-approved-stroke);
   grid-template-columns: 1fr auto auto;   /* label · amount · cash-out arrow */
-  column-gap: 11px;
+  column-gap: 8px;
   cursor: pointer;                         /* it's a control even below £20 */
 }
 
@@ -3222,13 +3391,17 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
 .txn-status.txn-cashed_out { background: rgba(35, 92, 45, .17); color: #44744c; }
 
 /* Cashable: the deposited balance has reached the £20 free-cash-out threshold.
-   A subtle pulsing drop-shadow on the bounding box (not intense) invites the tap. */
+   A soft green glow pulses evenly AROUND the pill (owner, 2026-10-16: "more subtle, i.e. around
+   the pill box"): no offset, a tight blur, about half the old strength, a slower beat. The box
+   keeps its usual drop shadow under it (--box-drop-shadow, inlined: the old pulse replaced it, so
+   between beats the card had no shadow at all). Each frame lists the same shadows, so they blend.
+   Owner, 2026-10-18: "30% more pulse": the glow's peak strength .13 -> .17, same size and beat. */
 @keyframes cashablePulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(33, 92, 45, 0); }
-  50%      { box-shadow: 0 4px 16px 1px rgba(33, 92, 45, .26); }
+  0%, 100% { box-shadow: 0 1px 2px rgba(10, 12, 16, .038), 0 2px 6px rgba(10, 12, 16, .022), 0 0 0 0 rgba(33, 92, 45, 0); }
+  50%      { box-shadow: 0 1px 2px rgba(10, 12, 16, .038), 0 2px 6px rgba(10, 12, 16, .022), 0 0 9px 1px rgba(33, 92, 45, .17); }
 }
 .account-main .simple-row.wide.approved.cashable {
-  animation: cashablePulse 1.9s ease-in-out infinite;
+  animation: cashablePulse 2.6s ease-in-out infinite;
   cursor: pointer;
 }
 
@@ -3347,11 +3520,22 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
   /* Short, squat screens (e.g. iPhone SE): trim the hero + vertical gaps so the
      leaderboard shows ~3 rows instead of 2. Targets the SE's shape (~0.56:1),
      not tall phones (~0.46:1) or tablets. */
-  .impact-item { grid-template-rows: 68px 22px; }
-  .impact-grid { margin-top: 8px; }
+  /* Keep the standard impact sizing (icon cell = the icon's own 80px height) so the
+     icon never overflows its grid track. Rebalance the eco block for the SE's short
+     canvas: nudge the icons up, give the amounts more air from the icons (they read
+     cramped at the base 11px), and cut the oversized gap under the ECO POINTS number
+     (was ~40px, dwarfing every other gap) so the block sits balanced. */
+  .impact-grid { margin-top: 5px; }
+  /* Icon cell 76px (down from 80): the art is bottom-aligned, so this trims dead space
+     ABOVE the icons without shrinking them — 76 still clears the tallest art (factory,
+     74px). gap 15 gives the amounts room from the icons. */
+  .impact-item { grid-template-rows: 76px 24px; gap: 15px; }
+  .impact-icon,
+  .impact-icon.bottle { height: 76px; }
   .points { font-size: 62px; }
   .points-block { margin-top: 18px; }
   .home-leader-rail { margin-top: 20px; }
+  .leaderboard { margin-top: 24px; }
   .leader-row { min-height: 38px; }
   .leader-row + .leader-row { margin-top: 6px; }
 }
@@ -3391,10 +3575,14 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
   flex: 1 1 auto; min-width: 0; height: 32px; box-sizing: border-box;
   border: 0; outline: none; background: var(--row); color: var(--ink);
   font-family: var(--font-ui); font-size: 13px; letter-spacing: .02em;
-  border-radius: 999px; width: 0; padding: 0; margin: 0; opacity: 0; pointer-events: none;
-  transition: opacity var(--hist-expand-ms, 650ms) ease;
+  border-radius: 999px; width: 0; padding: 0 14px; margin: 0; opacity: 0; pointer-events: none;
+  transition: opacity 160ms ease-out;
 }
-.account-content.history-open .history-search { width: auto; padding: 0 14px; opacity: 1; pointer-events: auto; }
+/* The padding is the same open and closed (owner, 2026-10-16: "when you collapse the history
+   section ... the 'search' wording jolts to the left"). It used to drop to 0 the moment History
+   closed, while the word was still fading out, so "search" jumped 14 px left. The box itself is
+   the same width either way (it is the head's one growing item). Closing, it is gone in 160 ms. */
+.account-content.history-open .history-search { width: auto; opacity: 1; pointer-events: auto; transition: opacity var(--hist-expand-ms, 650ms) ease; }
 
 .history-wrap {
   transition: transform var(--hist-expand-ms, 650ms) cubic-bezier(.2, .9, .16, 1),
@@ -3475,6 +3663,36 @@ html.scan-camera-active .screen[data-screen="scan"].active .global-logo {
 }
 /* Tap anywhere on the email row to edit it in a pop-out. */
 .simple-row.email-row { cursor: pointer; }
+
+/* Prototype mode switch (Settings). Only rendered for people the server allows; see
+   prototypeSwitchFeature in app.js. A real switch, not a chevron: it changes state in place. */
+.simple-row.proto-row { cursor: pointer; }
+.simple-row.proto-row[hidden] { display: none; }
+.proto-switch {
+  position: relative;
+  width: 46px;
+  height: 28px;
+  border-radius: 999px;
+  background: #d6d6d6;
+  transition: background .2s ease;
+  flex: 0 0 auto;
+}
+.proto-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .22);
+  transition: transform .2s ease;
+}
+.proto-row.is-on .proto-switch { background: linear-gradient(124deg, var(--brand-a) 0%, var(--brand-b) 100%); }
+.proto-row.is-on .proto-knob { transform: translateX(18px); }
+@media (prefers-reduced-motion: reduce) {
+  .proto-switch, .proto-knob { transition: none; }
+}
 .share-box {
   margin-top: 4px; border-radius: 18px; background: var(--row);
   padding: 14px 16px; display: grid; gap: 12px;
@@ -3545,7 +3763,10 @@ html[data-referral="locked"] .share-locked { display: grid; }
    the centring area to the space above the keyboard, lifting the card up. */
 html.keyboard-open .hug-confirm-overlay { padding-bottom: calc(24px + (var(--kb, 0px) * var(--fit, 1))); }
 .hug-confirm-overlay.show { opacity: 1; }
-.hug-confirm-card { width: 100%; max-width: 320px; background: #fff; border-radius: 20px; padding: 24px 22px 18px; text-align: center; box-shadow: 0 30px 70px -28px rgba(5,5,5,.5); transform: translateY(10px); transition: transform .2s ease; }
+/* Concentric (owner, 2026-10-10): the buttons sit the same 18 px from the sides as from the bottom,
+   and every corner of the card is the buttons' end radius plus that inset (23 + 18 = 41 px), so the
+   card's curve runs exactly parallel to each pill. */
+.hug-confirm-card { --confirm-inset: 18px; --confirm-btn-h: 46px; width: 100%; max-width: 320px; background: #fff; border-radius: calc(var(--confirm-btn-h) / 2 + var(--confirm-inset)); padding: 26px var(--confirm-inset) var(--confirm-inset); text-align: center; box-shadow: 0 30px 70px -28px rgba(5,5,5,.5); transform: translateY(10px); transition: transform .2s ease; }
 .hug-confirm-overlay.show .hug-confirm-card { transform: translateY(0); }
 .hug-confirm-title { font-family: var(--font-ui); font-weight: 600; font-size: 18px; margin: 0 0 8px; color: var(--ink); }
 .hug-confirm-body { font-size: 14px; color: var(--muted); margin: 0 0 20px; line-height: 1.45; }
@@ -3557,7 +3778,7 @@ html.keyboard-open .hug-confirm-overlay { padding-bottom: calc(24px + (var(--kb,
 }
 .hug-confirm-input:focus { outline: none; border-color: var(--brand-a); }
 .hug-confirm-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.hug-confirm-actions button { min-height: 46px; border-radius: 999px; border: 0; font-family: var(--font-ui); font-weight: 600; font-size: 14px; cursor: pointer; }
+.hug-confirm-actions button { min-height: var(--confirm-btn-h, 46px); border-radius: 999px; border: 0; font-family: var(--font-ui); font-weight: 600; font-size: 14px; cursor: pointer; }
 .hug-confirm-cancel { background: var(--row); color: var(--ink); }
 .hug-confirm-ok { color: #fff; background-image: linear-gradient(124deg, var(--brand-a), var(--brand-b)); }
 
@@ -3575,7 +3796,7 @@ html.keyboard-open .hug-confirm-overlay { padding-bottom: calc(24px + (var(--kb,
 .diag-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px 12px; border-bottom: 1px solid var(--box-stroke); }
 .diag-title { font-family: var(--font-ui); font-weight: 600; font-size: 16px; color: var(--ink); }
 .diag-close { border: 0; background: transparent; font-size: 18px; line-height: 1; color: var(--muted); cursor: pointer; padding: 4px; }
-.diag-scroll { overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 6px 18px 14px; }
+.diag-scroll { overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; padding: 6px 18px 14px; }
 .diag-sec { font-family: var(--font-ui); font-weight: 600; font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
   color: var(--muted); margin: 16px 0 6px; }
 .diag-row { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; border-bottom: 1px solid rgba(0,0,0,.04); font-size: 12.5px; }
@@ -3611,7 +3832,7 @@ html.is-offline .net-banner { transform: translateY(0); }
 .help-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px 12px; border-bottom: 1px solid var(--box-stroke); }
 .help-title { font-family: var(--font-ui); font-weight: 600; font-size: 16px; color: var(--ink); }
 .help-close { border: 0; background: transparent; font-size: 18px; line-height: 1; color: var(--muted); cursor: pointer; padding: 4px; }
-.help-scroll { overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 6px 14px 18px; }
+.help-scroll { overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; padding: 6px 14px 18px; }
 .help-item { border-bottom: 1px solid rgba(0,0,0,.05); }
 .help-q { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px;
   background: transparent; border: 0; cursor: pointer; text-align: left;
@@ -3625,6 +3846,46 @@ html.is-offline .net-banner { transform: translateY(0); }
   font-family: var(--font-ui); font-weight: 600; font-size: 13px; color: #fff;
   background-image: linear-gradient(124deg, var(--brand-a), var(--brand-b)); }
 .help-email--general { width: 100%; min-height: 46px; margin-top: 16px; font-size: 14px; }
+
+/* Language selector (Settings → language). Row current-language chip + a bottom-sheet
+   picker that mirrors the storefront footer switcher, styled with the app's tokens. */
+.lang-row-flag { font-size: 23px; line-height: 1; flex: none; }
+.lang-row-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.lang-row-chev { color: var(--muted); }
+html[dir="rtl"] .lang-row-chev { transform: scaleX(-1); }
+
+.lang-overlay { position: fixed; inset: 0; z-index: 260; display: flex; align-items: flex-end; justify-content: center; padding: 0;
+  background: rgba(10,10,10,.42); opacity: 0; transition: opacity .2s ease; }
+.lang-overlay.show { opacity: 1; }
+.lang-card { width: 100%; max-width: 460px; max-height: 78vh; display: flex; flex-direction: column;
+  background: #fff; border-radius: 22px 22px 0 0; overflow: hidden; box-shadow: 0 -20px 60px -28px rgba(5,5,5,.5);
+  transform: translateY(16px); transition: transform .22s ease; padding-bottom: env(safe-area-inset-bottom, 0px); }
+.lang-overlay.show .lang-card { transform: translateY(0); }
+.lang-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px 12px; border-bottom: 1px solid var(--box-stroke); }
+.lang-head--bare { justify-content: flex-end; border-bottom: 0; padding: 10px 14px 2px; }
+.lang-title { font-family: var(--font-ui); font-weight: 600; font-size: 16px; color: var(--ink); }
+.lang-close { border: 0; background: transparent; font-size: 18px; line-height: 1; color: var(--muted); cursor: pointer; padding: 4px; }
+.lang-scroll { overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; padding: 8px 12px 16px; }
+.lang-opt { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; background: transparent; border: 0;
+  border-radius: 12px; padding: 12px 12px; min-height: 48px; cursor: pointer; font-family: var(--font-ui);
+  font-size: 15px; color: var(--ink); line-height: 1.2; }
+.lang-opt:hover { background: var(--row); }
+.lang-opt .lang-flag { font-size: 20px; line-height: 1; flex: none; }
+/* languages sharing a country flag (hi/mr/te/ta = India) show a circled native initial
+   instead, so every row stays distinct; Hindi keeps the flag */
+.lang-flag--script { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: rgba(5,5,5,.07); font-size: 12.5px; font-weight: 700; }
+.lang-row-flag.lang-flag--script { width: 24px; height: 24px; font-size: 13px; }
+.lang-opt .lang-name { min-width: 0; }
+.lang-opt[aria-selected="true"] { font-weight: 600; }
+.lang-opt[aria-selected="true"]::after { content: ""; margin-left: auto; width: 9px; height: 9px; border-radius: 50%; flex: none;
+  background-image: linear-gradient(124deg, var(--brand-a), var(--brand-b)); }
+html[dir="rtl"] .lang-opt { text-align: right; }
+html[dir="rtl"] .lang-opt[aria-selected="true"]::after { margin-left: 0; margin-right: auto; }
+
+/* Pre-paint guard: hide the app until the i18n engine finishes the first pass, so a
+   non-English launch never flashes English. English never sets this class; a failsafe
+   in index.html removes it after ~1000ms if the engine or a dictionary fails to load. */
+html.hug-i18n-pending body { visibility: hidden; }
 
 /* Dedicated account auth modal: sign in / set up / set a password. Mirrors the
    web account page so a password set on either surface works on both. */
@@ -3674,42 +3935,17 @@ html.is-offline .net-banner { transform: translateY(0); }
 .prototype-row { margin-top: 13px; }
 /* Prototype row uses the exact settings icon (assets/icon-settings.svg), smaller. */
 .proto-icon { width: 20px; height: 20px; }
-/* Prototype = a real on/off slider: red + knob-left = off, green + knob-right = on. */
-.proto-switch { width: 46px; height: 26px; border-radius: 999px; background: #d64545; position: relative; flex: 0 0 auto; transition: background .22s ease; }
-html[data-demo="on"] .proto-switch { background: #2f9e44; }
-.proto-knob { position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .22s ease; }
-html[data-demo="on"] .proto-knob { transform: translateX(20px); }
+/* The prototype switch uses the giving switches' geometry (the .proto-switch block above): a 46 x 28
+   track, a 22 px knob, 3 px clear all round in both states. A later override here shrank the knob
+   to 20 px but kept the 18 px travel, so "on" sat 5 px from the right end and 3 px from the rest
+   (owner, 2026-10-10: "not sitting plumb"). */
 .share-show {
   width: 100%; height: 42px; border: 0; border-radius: 999px;
   background: transparent; box-shadow: inset 0 0 0 1px rgba(0,0,0,.16);
   color: var(--ink); font-family: var(--font-ui); font-size: 14px;
   letter-spacing: .06em; cursor: pointer; margin-top: 2px;
 }
-.screen[data-screen="checkout"] .bottom-nav::before {
-  top: -26px; height: 26px;
-  background: linear-gradient(
-    to top,
-    #ffffff 0%,
-    #ffffff 80%,
-    rgba(255,255,255,.5) 91%,
-    rgba(255,255,255,0) 100%
-  );
-}
-
 /* ---- (1) checkout top feather, (3) settings title up, (7) leaderboard expand, (4) impact page ---- */
-.screen[data-screen="checkout"] .top::after {
-  content: ""; position: absolute; left: 0; right: 0;
-  top: calc(100% - 2px); height: 14px;
-  background: linear-gradient(
-    to bottom,
-    rgba(255,255,255,1) 0%,
-    rgba(255,255,255,.92) 34%,
-    rgba(255,255,255,.58) 70%,
-    rgba(255,255,255,0) 100%
-  );
-  pointer-events: none; z-index: 6;
-}
-
 .screen[data-screen="settings"] .plain-content { align-content: start; }
 
 /* Leaderboard plus-to-expand (mirrors history) */
@@ -3731,8 +3967,31 @@ html[data-demo="on"] .proto-knob { transform: translateX(20px); }
 .home-content.leader-open .impact-grid,
 .home-content.leader-open .points-block { opacity: 0; pointer-events: none; }
 .home-content .home-leader-rail { transition: transform var(--hist-expand-ms, 650ms) cubic-bezier(.2, .9, .16, 1); }
-.home-content.leader-open .home-leader-rail { transform: translateY(var(--leader-shift, 0px)); position: relative; z-index: 9; }
-.leader-wrap { transition: height var(--hist-expand-ms, 650ms) cubic-bezier(.2, .9, .16, 1); }
+.home-content.leader-open .home-leader-rail { position: relative; z-index: 9; }
+/* The rail's slid position. Where Web Animations exist, app.js (listSlide) puts it on the rail's
+   own inline style as the slide starts, after the tap's other changes (.leader-open) have been
+   drawn; this class is the fallback that drives the CSS transition instead. */
+.home-content.leader-slid .home-leader-rail { transform: translateY(var(--leader-shift, 0px)); }
+/* The + expand is ONE motion: the rail's transform, on the compositor. The window under it does
+   not animate its height. It used to (a height transition, the same curve), so every frame of the
+   slide re-laid out the page INSIDE the moving rail, and iOS re-synced the rail's slide to each of
+   those frames slightly late: near the end, where the slide is slow, the board stepped BACK by up
+   to 1.5 pt, two or three times per open and per close (owner, 2026-10-15: "jittery towards the
+   end of each of the movements"; simulator recording, iPhone 16e). The window's bottom edge is
+   below the screen in both states (it runs on under the nav, see "Frosted bars, inner lists"), so
+   its height can change in one step where nobody sees it: setExpand() in app.js gives it the open
+   height as the rail starts up, and keeps it until the rail has come home on a close.
+   The rail keeps its own layer all the time. Dropping it when a close came to rest re-drew the
+   board at whole pixels: a last 0.25 pt twitch as it settled. And that layer is pinned by its
+   top-left corner (transform-origin; a translate does not care). Pinned by its centre, iOS
+   placed it by a point that moves with the window's height, so the same resting board sat
+   0.65 pt higher with the tall window held than with the closed one. */
+.leader-wrap { transition: none; }
+.home-content .home-leader-rail { will-change: transform; transform-origin: 0 0; }
+/* Where Web Animations exist (every current WebKit), app.js runs the slide itself, same curve and
+   duration plus a short hold at the end (see slide() in setExpand): the transition above is the
+   fallback, and must not run as well. */
+.home-content.leader-wa .home-leader-rail { transition: none; }
 
 /* Impact calculator */
 .impact-cta {
@@ -3816,14 +4075,14 @@ html[data-demo="on"] .proto-knob { transform: translateX(20px); }
 }
 .phone.bag-to-settings-switch .screen[data-screen="settings"].active .bottom-nav button {
   opacity: .22 !important;
-  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1) !important;
+  transition: opacity var(--bag-exit-ms) var(--chrome-ease) !important;
 }
 .phone.bag-to-settings-switch .screen[data-screen="settings"].active .bottom-nav button[data-go="settings"] {
   opacity: 1 !important;
 }
 .phone.bag-to-settings-switch .screen[data-screen="settings"].active .top > :not(.logo) {
   opacity: .22 !important;
-  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1) !important;
+  transition: opacity var(--bag-exit-ms) var(--chrome-ease) !important;
 }
 
 /* ---- (14) purchase history + (15) linked products settings pages ---- */
@@ -3888,7 +4147,19 @@ html[data-demo="on"] .proto-knob { transform: translateX(20px); }
 .phone.bag-scan-switch .screen[data-screen="bag"] .top .bag-button,
 .phone.bag-to-settings-switch .screen[data-screen="bag"].active .top .bag-button {
   opacity: 1 !important;
-  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1) !important;
+  transition: opacity var(--bag-exit-ms) var(--chrome-ease) !important;
+}
+
+/* ---- bag -> home: the bag's top bar fades straight to home's own values while the bag closes
+   (balance 1, bag icon .88), so home takes over with nothing left to change. Before, the balance
+   stopped at .88 and the bag icon was held at 1, and both changed again after the swap: about
+   0.9 s in all (owner, 2026-10-17: every switch within 0.5 s). Wins over the hold above (one
+   class more); the hold still keeps the icon full for closes to the dim pages. ---- */
+.phone.bag-closing.bag-home-reveal .screen[data-screen="bag"].active .top .balance {
+  opacity: 1;
+}
+.phone.bag-closing.bag-home-reveal .screen[data-screen="bag"].active .top .bag-button {
+  opacity: .88 !important;
 }
 
 /* ---- bag -> bottom-icon: the bag-nonhome-reveal choreography already fades the bag body
@@ -3899,7 +4170,7 @@ html[data-demo="on"] .proto-knob { transform: translateX(20px); }
    like the money->bottom screen cross-fade. (Held opaque above, so it reads opaque -> dim.) ---- */
 .phone.bag-closing.bag-nonhome-reveal .screen[data-screen="bag"].active .top {
   opacity: 0;
-  transition: opacity var(--bag-exit-ms) cubic-bezier(.22, .82, .2, 1);
+  transition: opacity var(--bag-exit-ms) var(--chrome-ease);
 }
 
 /* ---- batch: linked boxes taller+flat (#2), profile scrollbar hidden (#7),
@@ -3945,7 +4216,7 @@ html[data-demo="on"] .proto-knob { transform: translateX(20px); }
 .gift-tick { position: absolute; top: 0; left: 0; width: 24px; height: 24px; box-sizing: border-box; border-radius: 7px; border: 2px solid #b6bac1; background: #fff; transition: background-color .16s ease, border-color .16s ease; pointer-events: none; }
 .gift-check input:checked + .gift-tick {
   background-color: #2f7a3c; border-color: #2f7a3c;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='%23ffffff' stroke-width='3.6' stroke-linecap='round' stroke-linejoin='round' d='M5 12.5l4.5 4.5L19 7'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='white' d='M18.16 4 C18.35 3.96 18.46 3.98 18.58 4 C18.69 4.02 18.8 4.06 18.87 4.11 C18.93 4.16 18.98 4.23 18.99 4.3 C19 4.38 19.36 3.93 18.94 4.57 C18.52 5.21 17.21 6.98 16.47 8.14 C15.73 9.3 15.13 10.33 14.49 11.53 C13.86 12.73 13.1 14.37 12.66 15.35 C12.21 16.33 12.07 16.74 11.81 17.42 C11.55 18.1 11.26 19.06 11.11 19.44 C10.96 19.83 11 19.65 10.91 19.73 C10.83 19.81 10.72 19.87 10.6 19.92 C10.49 19.96 10.35 19.99 10.21 20 C10.07 20.01 9.9 20.01 9.76 19.97 C9.62 19.93 9.69 20.2 9.36 19.77 C9.04 19.34 8.3 18.09 7.79 17.4 C7.28 16.7 6.74 16.1 6.31 15.6 C5.88 15.11 5.43 14.66 5.22 14.42 C5.01 14.19 5.09 14.25 5.05 14.18 C5.02 14.1 4.99 14.06 5.01 13.97 C5.03 13.88 5.09 13.74 5.19 13.65 C5.3 13.55 5.47 13.46 5.63 13.42 C5.78 13.37 5.99 13.36 6.14 13.37 C6.29 13.39 6.36 13.4 6.51 13.5 C6.67 13.6 6.8 13.68 7.07 13.97 C7.34 14.25 7.67 14.6 8.12 15.21 C8.57 15.82 9.48 17.2 9.78 17.63 C10.09 18.05 9.91 17.75 9.96 17.76 C10.02 17.77 10.07 17.75 10.12 17.7 C10.17 17.65 10.09 17.91 10.26 17.48 C10.44 17.05 10.85 15.92 11.19 15.11 C11.53 14.29 11.93 13.39 12.3 12.61 C12.67 11.82 13.07 11.03 13.42 10.38 C13.76 9.72 13.95 9.37 14.37 8.66 C14.79 7.96 15.51 6.8 15.94 6.14 C16.37 5.49 16.68 5.05 16.93 4.74 C17.19 4.42 17.26 4.37 17.46 4.25 C17.67 4.13 17.98 4.04 18.16 4 Z'/></svg>");
   background-repeat: no-repeat; background-position: center; background-size: 16px 16px;
 }
 
@@ -3986,7 +4257,8 @@ html[data-demo="on"] .proto-knob { transform: translateX(20px); }
 .gift-papers { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
 .gift-paper { aspect-ratio: 1 / 1; border-radius: 14px; border: 0; cursor: pointer; padding: 0; position: relative; box-shadow: inset 0 0 0 1px rgba(0,0,0,.08); transition: transform .14s ease, box-shadow .14s ease; }
 .gift-paper.sel { box-shadow: inset 0 0 0 2px #2f7a3c, 0 3px 9px rgba(0,0,0,.14); transform: translateY(-2px); }
-.gift-paper.sel::after { content: ""; position: absolute; right: 6px; bottom: 7px; width: 5px; height: 9px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); filter: drop-shadow(0 0 1px rgba(0,0,0,.45)); }
+.gift-paper.sel::after { content: ""; position: absolute; right: 6px; bottom: 6px; width: 10px; height: 11px; background: #fff;
+  -webkit-mask: var(--tick) no-repeat center / contain; mask: var(--tick) no-repeat center / contain; filter: drop-shadow(0 0 1px rgba(0,0,0,.45)); }
 .gift-paper-0 { background-color: #c9a16b; background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.18) 0 6px, transparent 6px 12px); }
 .gift-paper-1 { background-color: #b5403a; background-image: repeating-linear-gradient(90deg, rgba(255,255,255,.5) 0 4px, transparent 4px 14px); }
 .gift-paper-2 { background-color: #2f6b46; background-image: radial-gradient(circle at 30% 30%, rgba(255,255,255,.4) 1.6px, transparent 2.4px), radial-gradient(circle at 70% 70%, rgba(255,255,255,.4) 1.6px, transparent 2.4px); background-size: 15px 15px; }
@@ -3995,7 +4267,8 @@ html[data-demo="on"] .proto-knob { transform: translateX(20px); }
 .gift-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 6px 0 2px; }
 .gift-card-opt { aspect-ratio: 3 / 4; border-radius: 10px; border: 0; cursor: pointer; padding: 0; position: relative; box-shadow: inset 0 0 0 1px rgba(0,0,0,.10); transition: transform .14s ease, box-shadow .14s ease; background-size: cover; background-position: center; }
 .gift-card-opt.sel { box-shadow: inset 0 0 0 2px #2f7a3c, 0 3px 9px rgba(0,0,0,.14); transform: translateY(-2px); }
-.gift-card-opt.sel::after { content: ""; position: absolute; right: 5px; bottom: 6px; width: 5px; height: 9px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); filter: drop-shadow(0 0 1px rgba(0,0,0,.5)); }
+.gift-card-opt.sel::after { content: ""; position: absolute; right: 4px; bottom: 4px; width: 10px; height: 11px; background: #fff;
+  -webkit-mask: var(--tick) no-repeat center / contain; mask: var(--tick) no-repeat center / contain; filter: drop-shadow(0 0 1px rgba(0,0,0,.5)); }
 .gift-card-opt-0 { background-color: #efe7d6; background-image: linear-gradient(transparent 45%, rgba(90,68,40,.28) 45% 47%, transparent 47%, transparent 55%, rgba(90,68,40,.18) 55% 57%, transparent 57%); }
 .gift-card-opt-1 { background-color: #f0d8da; background-image: radial-gradient(circle at 50% 40%, rgba(178,64,76,.42) 14%, transparent 16%); }
 .gift-card-opt-2 { background-color: #d9e6da; background-image: linear-gradient(135deg, transparent 42%, rgba(54,110,72,.34) 42% 46%, transparent 46%); }
@@ -4060,20 +4333,6 @@ html[data-demo="on"] .proto-knob { transform: translateX(20px); }
 .purchase-row.pr-cherry { background: rgba(190, 55, 70, .12); }
 .purchase-row.pr-blue { background: rgba(48, 95, 175, .12); }
 .purchase-row.pr-lemon { background: rgba(206, 168, 38, .16); }
-
-/* profile: top-header feather (mirrors the checkout top feather) */
-.screen[data-screen="profile"] .top::after {
-  content: ""; position: absolute; left: 0; right: 0;
-  top: calc(100% - 2px); height: 14px;
-  background: linear-gradient(
-    to bottom,
-    rgba(255,255,255,1) 0%,
-    rgba(255,255,255,.92) 34%,
-    rgba(255,255,255,.58) 70%,
-    rgba(255,255,255,0) 100%
-  );
-  pointer-events: none; z-index: 6;
-}
 
 /* gift wrap: per-SKU configurable units */
 .gift-units { display: grid; gap: 10px; }
@@ -4273,21 +4532,45 @@ html[data-demo="on"] .proto-knob { transform: translateX(20px); }
    Collapse polish v2 (iPhone)
    A. Home content fades in/out SYNCED to the list slide (was delayed -> blank on
       collapse; was too fast -> flash on expand). Same duration as the slide.
+      Revised 2026-10-16, see below.
    B. Scroll windows get a solid white background so content behind never shows
       through the gaps between rows (the see-through to the balance writing).
    C. Feather pushed to the very bottom edge + more opaque base, so the bottom
       partial row fades fully with no hard line.
 --------------------------------------------------------------------------- */
+/* A, revised (owner, 2026-10-16: "the background should fade out faster so you cannot see the
+   white line as much when it is moving", home and History both). Synced to the ~1 s slide, the
+   page behind stayed half visible all the way, and the list's white top edge drew a hard line
+   across it (the BALANCE title, the cards, TOKENS) as it moved. Now:
+     · opening: gone in 200 ms from the tap. The slide starts ~90-130 ms after the tap (app.js
+       listSlide waits for a calm page), so it is ~3/4 faded as the list starts up and gone
+       before the list is half way;
+     · closing: back after 300 ms, in 260 ms. By then the list is ~3/4 of the way home and has
+       uncovered most of the page, so its edge mostly crosses white, not the cards.
+   The open rule's selectors are more specific, so whichever way the class goes, the state it
+   goes TO picks the timing. The story (.detail-motion, further down) keeps its own. */
 .home-content .impact-grid,
 .home-content .points-block,
 .account-content .account-main,
-.account-content .plain-title,
+.account-content .plain-title {
+  transition: opacity 260ms ease-in-out 300ms !important;
+}
 .home-content.leader-open .impact-grid,
 .home-content.leader-open .points-block,
 .account-content.history-open .account-main,
 .account-content.history-open .plain-title {
-  transition: opacity var(--hist-expand-ms, 650ms) ease !important;
+  transition: opacity 200ms ease-out 0ms !important;
 }
+/* ...and the parts that fade keep their own layer ALL the time (owner, 2026-10-16: "the icons for
+   the people and planet stuff jolts down a touch when you collapse it"; "the cashback deposited
+   pill box jolts a bit up and down"). Given a layer only for the fade, iOS dropped it again as the
+   fade back in ended and re-drew the part at whole pixels, in plain view: the impact row came down
+   2 pt; History's balance cards dropped 1.1 pt and back when the window shrank behind them.
+   With the layer kept: 0.07 and 0 pt (simulator recording, marks tracked frame by frame). */
+.home-content .impact-grid,
+.home-content .points-block,
+.account-content .account-main,
+.account-content .plain-title { will-change: opacity; }
 .leader-wrap,
 .history-wrap {
   background: #fff;
@@ -4327,8 +4610,9 @@ html[data-demo="on"] .proto-knob { transform: translateX(20px); }
    the collapsed list to its glance count (leaderboard top 10, history top 20);
    expanded still shows all rows. Pure show/hide, no re-render.
 --------------------------------------------------------------------------- */
-.home-content:not(.leader-open) .leader-list .leader-row:nth-child(n+11) { display: none; }
-.account-content:not(.history-open) .history-list .history-row:nth-child(n+21) { display: none; }
+.home-content:not(.leader-open):not(.leader-prep) .leader-list .leader-row:nth-child(n+11) { display: none; }   /* .leader-prep: the + expand lays them out before its slide starts (app.js setExpand) */
+.account-content:not(.history-open):not(.history-prep) .history-list .history-row:nth-child(n+21) { display: none; }   /* .history-prep: the + expand lays them out before its slide starts (app.js) */
+.account-content.history-glance .history-list .history-row:nth-child(n+21) { display: none; }   /* a close hides them at the tap, before its slide starts (app.js) */
 
 /* ---------------------------------------------------------------------------
    Expand speed (iPhone) — slow both the leaderboard and History expand/collapse
@@ -4350,12 +4634,38 @@ html[data-demo="on"] .proto-knob { transform: translateX(20px); }
   min-height: 0;
 }
 .account-content.history-open .history-rail {
-  transform: translateY(calc(var(--hist-shift, 0px) * -1));
   position: relative;
   z-index: 9;
 }
+/* Its slid position: inline on the rail where Web Animations exist (app.js listSlide), this
+   class otherwise, as on home. */
+.account-content.history-slid .history-rail {
+  transform: translateY(calc(var(--hist-shift, 0px) * -1));
+}
+/* At rest the rail is never at the identity transform: a 0.01px one, invisible. With none, iOS
+   placed it by whole pixels in a way that depended on the window's height: with the tall window
+   it sat 1 pt higher, so the board flicked when the window grew before a slide or shrank after
+   one (simulator, 2026-10-16). */
+.account-content:not(.history-slid) .history-rail { transform: translateY(0.01px); }
 .account-content.history-open .history-wrap { transform: none; }
-.history-wrap { transition: height var(--hist-expand-ms, 650ms) cubic-bezier(.2, .9, .16, 1); }
+/* The History + expand is ONE motion too, the rail's, exactly like the leaderboard (styles.css
+   "The + expand is ONE motion", app.js listSlide): the window does not animate its height, the
+   rail keeps its own layer pinned by its top-left corner, and app.js runs the slide where Web
+   Animations exist (.history-wa switches the transition off). The list's own layer is pinned by
+   its corner too, so its resting place does not depend on the window's height. */
+.history-wrap { transition: none; }
+.history-rail { will-change: transform; transform-origin: 0 0; }
+.account-content.history-wa .history-rail { transition: none; }
+.history-list { transform-origin: 0 0; }
+/* History's white reaches the screen's edges (owner, 2026-10-16: "you can see the background of
+   the history list as it moves up and down"). The window is the list's width, inset from the
+   screen, and the balance cards it slides over are wider: as they faded, their ends showed at
+   both sides of it. Copies of the window's own white (box-shadows, no blur, shifted 48px out on
+   each side, and 8px up across the top, the head band's reach) run it out to the edges for its
+   full height; .content clips them at the screen's edge. Nothing sits beside the window, so at
+   rest nothing changes; the 8px strip above the head is see-through glass otherwise, and the
+   BALANCE title showed through it. */
+.history-wrap { box-shadow: -48px -8px 0 #fff, 48px -8px 0 #fff, 0 -8px 0 #fff; }
 
 /* ---------------------------------------------------------------------------
    History width fix (iPhone)
@@ -4682,3 +4992,582 @@ html.keyboard-open .scan-account-copy { display: none; }
 .ce-price-note b { color: var(--ink); font-weight: 600; }
 /* Small inline price tag on the gift-wrap / gift-card labels. */
 .gift-price { text-transform: none; letter-spacing: normal; font-size: 12px; font-weight: 600; color: var(--ink); opacity: .8; margin-left: 4px; }
+
+/* ============================================================================
+   hug design language ("Held") — applied behaviours
+   Two principles the app was missing, added without changing the look:
+   • "Calm over clever": honour the OS reduced-motion setting.
+   • "Precision in the details": one consistent keyboard focus ring
+     (shows only for keyboard/switch users; never appears on touch).
+   Spec: docs/design-language/HUG_DESIGN_LANGUAGE.md
+   ============================================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+.phone button:focus-visible,
+.phone a:focus-visible,
+.phone [role="button"]:focus-visible,
+.phone [role="textbox"]:focus-visible,
+.phone input:focus-visible,
+.phone select:focus-visible,
+.phone [tabindex]:focus-visible {
+  outline: 2px solid var(--brand-a);
+  outline-offset: 2px;
+}
+
+/* the HUG tick, sitting inline in a line of text (see hugSetText in hug-i18n.js).
+   Height is set from the text size; width follows the artwork's 14.2 : 16.2 shape. */
+.hug-tick { display: inline-block; width: .73em; height: .83em; vertical-align: -.13em; flex: 0 0 auto; }
+
+/* ---- HUG Giving: tokens, six causes, where your tokens go ---------------------------------
+   Rows here are two-line cards (name, partner, this hug's share), so they are not the one-line
+   pill .simple-row. The switch is its own pair of classes: .proto-switch is recoloured per
+   prototype mode further up and must not be borrowed. */
+.giving-intro { color: var(--muted); font-size: 14px; line-height: 1.5; letter-spacing: .02em; text-align: center; margin: 0 auto 16px; max-width: 34ch; }
+/* Said once, above the list, so every amount below reads as per hug o (owner, 2026-10-11:
+   "just add it once, at the top" / "each hug o contributes ="). */
+.giving-lead { color: #080808; font-size: 16px; letter-spacing: .06em; text-align: center; margin: 0 0 12px; }
+.giving-list { display: grid; gap: 10px; }
+.giving-panel-title { color: var(--muted); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; text-align: center; margin: 12px 0 2px; }
+.giving-panel-title:first-child { margin-top: 0; }
+.giving-row {
+  width: 100%; display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 12px;
+  padding: 12px 16px; border-radius: 22px; background: var(--row); color: #080808; text-align: left;
+  letter-spacing: .02em; touch-action: manipulation; cursor: pointer;
+  border: 1px solid var(--box-stroke); background-clip: padding-box; box-shadow: var(--box-drop-shadow);
+}
+.giving-row .giving-icon { width: 30px; height: 30px; object-fit: contain; }
+/* The factory stands taller, as on home (giving/carbon.svg is 26 x 33 at the same scale):
+   a taller box, pulled back so the row keeps its height. */
+.giving-row .giving-icon.is-tall { height: 38px; margin: -4px 0; }
+.giving-row .giving-text { display: grid; gap: 2px; min-width: 0; }
+.giving-row .giving-name { font-size: 16px; letter-spacing: .06em; }
+.giving-row .giving-partner { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.giving-row .giving-share { font-size: 13px; }
+.giving-row .giving-icon, .giving-row .giving-name { transition: opacity .32s ease; }
+.giving-row .giving-share { transition: color .32s ease; }
+.giving-row:not(.is-on) .giving-icon, .giving-row:not(.is-on) .giving-name { opacity: .45; }
+.giving-row:not(.is-on) .giving-share { color: var(--muted); }
+.giving-row[aria-disabled="true"] { cursor: default; }
+/* The pink can't transition as a background image, so it is its own layer that fades (owner,
+   2026-10-10: switches "smoother … not so immediate"). The knob glides on the same curve. */
+.giving-switch { position: relative; width: 46px; height: 28px; border-radius: 999px; background: #d6d6d6; flex: 0 0 auto; }
+.giving-switch::before { content: ""; position: absolute; inset: 0; border-radius: inherit; background: linear-gradient(124deg, var(--brand-a) 0%, var(--brand-b) 100%); opacity: 0; transition: opacity .32s ease; }
+.giving-knob { position: absolute; z-index: 1; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.22); transition: transform .32s cubic-bezier(.4, 0, .2, 1); }
+.giving-row.is-on .giving-switch::before { opacity: 1; }
+.giving-row.is-on .giving-knob { transform: translateX(18px); }
+.giving-row.is-last .giving-switch { opacity: .6; }
+.giving-msg { min-height: 1.4em; color: var(--muted); font-size: 13px; line-height: 1.4; text-align: center; margin: 12px auto 0; max-width: 34ch; }
+.giving-msg.is-error { color: #b3261e; }
+.giving-signin { text-align: center; color: var(--muted); font-size: 14px; margin: 8px 0 16px; }
+.giving-signin[hidden] { display: none; }
+.giving-link {
+  display: block; margin: 14px auto 4px; padding: 10px 18px; border-radius: 999px; background: var(--row);
+  color: #080808; font-size: 14px; letter-spacing: .04em; text-align: center; cursor: pointer; touch-action: manipulation;
+}
+.giving-so-far { display: grid; gap: 8px; margin-top: 4px; }
+.giving-item { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 18px; background: var(--row); border: 1px solid var(--box-stroke); background-clip: padding-box; box-shadow: var(--box-drop-shadow); }
+.giving-item img { width: 26px; height: 26px; object-fit: contain; }
+.giving-item img.is-tall { height: 33px; margin: -3.5px 0; }
+.giving-item .giving-item-main { display: grid; gap: 1px; min-width: 0; }
+.giving-item .giving-item-out { font-family: var(--font-display); font-size: 15px; font-weight: 700; letter-spacing: .01em; line-height: 1.25; }
+.giving-item .giving-item-partner { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }   /* one line: a long partner name ellipsizes, it does not make the row taller */
+.giving-item .giving-item-tok { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.giving-item.is-off { opacity: .5; }
+.giving-cup-note { margin-top: 0; }
+.giving-per-cup { display: grid; gap: 8px; }
+@media (prefers-reduced-motion: reduce) { .giving-switch, .giving-switch::before, .giving-knob, .giving-row .giving-icon, .giving-row .giving-name, .giving-row .giving-share { transition: none; } }
+
+/* ---- impact detail: tap a home-row icon (impactDetail in app.js) ---------------------------
+   Owner brief 2026-10-10: everything but the tapped icon fades out over 0.5 s (top bar and
+   bottom nav stay), then the story fades in over 0.5 s while a side icon glides to the middle.
+   Every move eases in AND out ("a mini ramp up and ramp down"). JS sets --detail-ms, so reduced
+   motion can make it 0. The motion transitions apply only while the detail is in play
+   (.detail-motion), so they never change how the leaderboard's own open/close feels. */
+:root {
+  --detail-ease: cubic-bezier(.45, 0, .55, 1);
+  /* The icon's glide to the middle and back (owner, 2026-10-10: "softer and smoother"). An even
+     sine-shaped S over 0.8 s (GLIDE_MS in app.js): top speed only 1.6x the average, ~0.22 px/ms
+     for a side icon, against 0.70 px/ms for the 0.5 s long-tail curve it replaces, which darted
+     through the middle. Both ends ease in and out at the same gentle rate. */
+  --detail-glide: cubic-bezier(.37, 0, .63, 1);
+}
+.home-content.detail-motion .impact-item,
+.home-content.detail-motion .impact-value,
+.home-content.detail-motion .impact-dots,
+.home-content.detail-motion .points-block,
+.home-content.detail-motion .home-leader-rail {
+  /* !important: the leaderboard's collapse polish pins .points-block to its own 650 ms with
+     !important (search "Collapse polish v2"). Scoped to .detail-motion, so that one is untouched. */
+  transition: opacity var(--detail-ms, 500ms) var(--detail-ease) !important;
+}
+/* Everything that fades is on its own layer for the whole time the story is in play, so a fade
+   starting (out, or back in while the icon is still gliding home) never creates a layer mid-move. */
+.home-content.detail-motion .impact-item,
+.home-content.detail-motion .impact-dots,
+.home-content.detail-motion .points-block,
+.home-content.detail-motion .home-leader-rail { will-change: opacity; }
+/* ...and the row's items keep those layers after the story closes (.story-layers, app.js
+   impactDetail), until the row moves or home is left: dropped as the story ended, they moved
+   the icon that had just glided home by 1 pt. */
+.home-content.story-layers .impact-item,
+.home-content.story-layers .impact-dots { will-change: opacity; }
+/* ...and the rail keeps the transform layer it always has (see the + expand), or the story would
+   drop it and re-draw the board at whole pixels. */
+.home-content.detail-motion .home-leader-rail { will-change: opacity, transform; }
+.home-content.is-detail .impact-item:not(.is-picked),
+.home-content.is-detail .impact-item.is-picked .impact-value,
+.home-content.is-detail .impact-dots,
+.home-content.is-detail .points-block,
+.home-content.is-detail .home-leader-rail {
+  opacity: 0;
+  pointer-events: none;
+}
+.impact-item[role="button"] { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+/* The picked icon gets its own compositor layer, so the glide never waits on a repaint of the row
+   around it. Getting that layer re-snaps the icon to the pixel grid: a ~0.6 pt twitch (simulator
+   recording, 2026-10-11; owner: "make it smoother"). So it is taken at the PRESS (.is-pressed),
+   under the finger, not at the click, in plain view 250 ms before the glide. Not on every icon all
+   the time: that made the opening spin's first frames jump (11-22 px instead of 3, measured). */
+.impact-item.is-pressed .impact-icon,
+.impact-item.is-picked .impact-icon,
+.impact-item.keeps-layer .impact-icon { will-change: transform; }   /* keeps-layer: a closed story's icon keeps it (app.js impactDetail) */
+.impact-item[role="button"]:focus { outline: none; }
+.impact-item[role="button"]:focus-visible .impact-icon {
+  outline: 2px solid var(--brand-b);
+  outline-offset: 4px;
+  border-radius: var(--radius-chip);
+}
+
+/* Type, on the home screen's own terms: two weights (600 for spaced capitals, 400 for every
+   word), three sizes (13 / 15 / 20), one tracking for capitals (.28em, the leaderboard's family)
+   and one for running text (.04em; the app's .08em base is for short labels, and reads loose
+   over three lines). The amount is the TOKENS figure's gradient at the same weight as its
+   sentence, so the line keeps one weight. */
+.impact-detail {
+  position: absolute;
+  left: var(--page-pad);
+  right: var(--page-pad);
+  bottom: calc(76px + var(--safe-bottom));
+  z-index: 6;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 0 0 18px;
+  text-align: center;
+  letter-spacing: .04em;
+  opacity: 0;
+  will-change: opacity;     /* its own layer from the moment it is laid out, not when the fade starts */
+  transition: opacity var(--detail-ms, 500ms) var(--detail-ease);
+}
+.impact-detail[hidden] { display: none; }
+.impact-detail:not(.is-in) { pointer-events: none; }   /* laid out early, invisible: not tappable */
+.impact-detail.is-in { opacity: 1; }
+.impact-detail-kicker,
+.impact-detail-label {
+  margin: 0;
+  color: var(--muted);
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .28em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+.impact-detail-kicker {
+  padding-left: .28em;                    /* balances the spacing that trails the last letter */
+  line-height: 30px;
+}
+.impact-detail-label { display: block; padding-left: .28em; }
+.impact-detail-lead {
+  margin: 12px auto 0;
+  max-width: 318px;
+  color: var(--ink);
+  font-size: 20px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+.impact-detail-amount {
+  background-image: var(--brand-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.impact-detail-body {
+  margin: 16px auto 0;
+  max-width: 318px;
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.6;
+}
+.impact-detail-facts {
+  margin: 24px auto 0;
+  max-width: 318px;
+  display: grid;
+  gap: 16px;
+}
+.impact-detail-facts[hidden],
+.impact-detail-body[hidden] { display: none; }
+.impact-detail-fact { display: grid; gap: 8px; justify-items: center; }
+.impact-detail-value { color: var(--ink); font-size: 15px; font-weight: 400; line-height: 1.5; }
+.impact-detail-link {
+  display: inline-block;
+  margin: 24px auto 0;
+  padding: 8px 4px;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  font-weight: 400;
+  letter-spacing: .04em;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-decoration-color: rgba(5, 5, 5, .28);
+  text-underline-offset: 4px;
+  cursor: pointer;
+}
+
+/* ---- Frosted bars: the header and the nav frost only while content is under them ----
+   Owner spec 2026-10-10: frosted glass on the top bar AND the bottom nav, but only while
+   something is actually underneath; otherwise each bar is plain white, as before. A 1px
+   hairline shows only while a bar is frosted and fades in and out with it. This replaces the
+   fade-to-white "feathers" where content met the header or the nav.
+   Recipe is the website's (hug-theme sections/hug-header.liquid .hhd-header, mirrored in
+   assets/hug.css .header) but more see-through at the owner's request (2026-10-10): white at
+   .36 alpha, not the site's .6 — set once in --glass-white below; same saturate(160%)
+   blur(14px) and --box-stroke line.
+   frosted-bars.js toggles .is-under-top / .is-under-bottom on the screen from the scroll
+   position of its .content (no scroll-driven animations: iOS WebKit does not do them
+   reliably). It only touches screens that set --frosted-bars: 1 below.
+   Only screens whose .content scrolls take part. home, account and bag are overflow:hidden
+   (their lists scroll inside fixed windows that stop above the nav); qr and scan never
+   scroll. They keep exactly today's layout.
+   Nothing moves at rest: .content now spans the header and nav rows too, and its padding
+   grows by exactly those rows' heights, so the first item sits where it did. */
+:root {
+  /* The frosted surfaces (top bar, bottom nav, list heads): two knobs for all of them.
+     Owner: .6 → .48 → .36 → .18 (2026-10-10), then "go" on more see-through (2026-10-11): .10
+     with a 10px blur. Over the bright pink History rows that read as a pink smear with the
+     nav's dimmed icons lost in it (owner, 2026-10-11: "looks shit, fix it"). So the iOS bar
+     recipe instead: mostly white and a strong blur. Colour underneath shows as an even, soft
+     tint; shapes do not show at all, and the icons stay readable. */
+  --glass-white: rgba(255, 255, 255, .72);
+  --glass-filter: saturate(140%) blur(24px);
+}
+.screen:is([data-screen="settings"], [data-screen="checkout"], [data-screen="profile"], [data-screen="card"],
+           [data-screen="impact"], [data-screen="giving"], [data-screen="purchases"], [data-screen="linked"]) {
+  --frosted-bars: 1;
+  --frost-head-h: calc(100px + var(--safe-top));     /* = the .screen grid's header row */
+  --frost-nav-h: calc(76px + var(--safe-bottom));    /* = the .screen grid's nav row */
+  --frost-pad-top: 18px;                             /* .plain-content:not(.shop-content) */
+  --frost-pad-bottom: 18px;
+}
+@media (max-height: 790px) {
+  .screen:is([data-screen="settings"], [data-screen="checkout"], [data-screen="profile"], [data-screen="card"],
+             [data-screen="impact"], [data-screen="giving"], [data-screen="purchases"], [data-screen="linked"]) {
+    --frost-head-h: calc(94px + var(--safe-top));
+    --frost-nav-h: calc(74px + var(--safe-bottom));
+  }
+}
+.screen:is([data-screen="profile"], [data-screen="impact"]) { --frost-pad-top: 8px; }   /* their own 8px */
+.screen[data-screen="checkout"] { --frost-pad-bottom: 32px; }                          /* .checkout-content */
+
+.screen:is([data-screen="settings"], [data-screen="checkout"], [data-screen="profile"], [data-screen="card"],
+           [data-screen="impact"], [data-screen="giving"], [data-screen="purchases"], [data-screen="linked"]) > .top {
+  grid-column: 1;
+  grid-row: 1;
+}
+.screen:is([data-screen="settings"], [data-screen="checkout"], [data-screen="profile"], [data-screen="card"],
+           [data-screen="impact"], [data-screen="giving"], [data-screen="purchases"], [data-screen="linked"]) > .content {
+  grid-column: 1;
+  grid-row: 1 / 4;                                   /* under both bars; z-index 5 keeps it below their 60 */
+  padding-top: calc(var(--frost-head-h) + var(--frost-pad-top));
+  padding-bottom: calc(var(--frost-nav-h) + var(--frost-pad-bottom));
+  scroll-padding-top: var(--frost-head-h);
+  scroll-padding-bottom: var(--frost-nav-h);
+}
+.screen:is([data-screen="settings"], [data-screen="checkout"], [data-screen="profile"], [data-screen="card"],
+           [data-screen="impact"], [data-screen="giving"], [data-screen="purchases"], [data-screen="linked"]) > .bottom-nav {
+  grid-column: 1;
+  grid-row: 3;
+}
+
+/* Resting: solid white, no line. Frosted: --glass-white + blur + the hairline, fading over 200ms.
+   The blur itself switches instantly: it only ever turns on or off when the content edge is
+   level with the bar, so there is nothing under it to see change. */
+.screen:is([data-screen="settings"], [data-screen="checkout"], [data-screen="profile"], [data-screen="card"],
+           [data-screen="impact"], [data-screen="giving"], [data-screen="purchases"], [data-screen="linked"]) > :is(.top, .bottom-nav),
+.screen:is([data-screen="home"], [data-screen="account"]) > .bottom-nav {
+  background-color: rgba(255, 255, 255, 1);
+  box-shadow: inset 0 -1px 0 rgba(191, 194, 198, 0);
+  transition: background-color .2s ease, box-shadow .2s ease;
+}
+.screen:is([data-screen="settings"], [data-screen="checkout"], [data-screen="profile"], [data-screen="card"],
+           [data-screen="impact"], [data-screen="giving"], [data-screen="purchases"], [data-screen="linked"]) > .bottom-nav,
+.screen:is([data-screen="home"], [data-screen="account"]) > .bottom-nav {
+  box-shadow: inset 0 1px 0 rgba(191, 194, 198, 0);
+}
+.screen.is-under-top > .top {
+  background-color: var(--glass-white);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+  box-shadow: inset 0 -1px 0 var(--box-stroke);
+}
+.screen.is-under-bottom > .bottom-nav {
+  background-color: var(--glass-white);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+  box-shadow: inset 0 1px 0 var(--box-stroke);
+}
+@media (prefers-reduced-motion: reduce) {
+  .screen[data-screen] > :is(.top, .bottom-nav) { transition: none; }
+}
+
+/* The leaderboard and History bottom feathers sat on .home-content / .account-content, against
+   the nav (several stacked rules above). Retired with the rest. */
+.home-content::after,
+.account-content::after {
+  content: none;
+}
+
+/* ---- Frosted bars, inner lists: the home leaderboard and the account History ----
+   home and account do not scroll as a page; their lists scroll inside fixed windows
+   (.leader-wrap / .history-wrap, sized by syncResponsiveScrollWindows and the + expand in
+   app.js). Those windows stopped just above the nav, so nothing ever passed under it.
+   Here each window runs on down under the nav by --inner-under-nav, and its list's bottom
+   padding grows by the same amount:
+     · the top of each window, and every row at scroll 0, stay exactly where they were;
+     · at the end of a scroll the last row rests exactly where it did before, clear of the nav;
+     · in between, rows pass under the nav, and frosted-bars.js frosts it while they do.
+   The +12px covers the few px each fit leaves above the nav (6 collapsed, 8 or 10 expanded),
+   so the window always reaches the screen's bottom edge; the .content clip below stops any
+   overshoot there. Collapsed and expanded both: the inline window heights app.js sets feed
+   the same var. */
+.screen:is([data-screen="home"], [data-screen="account"]) {
+  --frosted-bars: 1;
+  --frost-nav-h: calc(76px + var(--safe-bottom));    /* = the .screen grid's nav row */
+  --inner-under-nav: calc(var(--frost-nav-h) + 12px);
+}
+@media (max-height: 790px) {
+  .screen:is([data-screen="home"], [data-screen="account"]) {
+    --frost-nav-h: calc(74px + var(--safe-bottom));
+  }
+}
+/* .content clipped everything at the nav's top edge (overflow: hidden). Same clip on the top
+   and sides, but the bottom edge now sits at the screen's bottom, so the windows can show
+   under the nav. Neither .content scrolled (overflow was hidden), so nothing is lost by
+   letting it overflow downwards; flow-root keeps home's block formatting context so no margin
+   moves. overflow-x stays clipped, as a layout matter too: the impact row's parked panel sits
+   off to the side, and as layout overflow it would widen a mobile page and shift everything.
+   The screen clips as well (its box is the .phone's), so a window that overshoots the bottom
+   edge never becomes scrollable overflow of the overflow:hidden .phone. min-width: 0 because a
+   grid item that is not a scroll container gets min-width:auto, and the 1fr column would grow
+   to the impact row's width, shifting the header and the nav with it. */
+.screen:is([data-screen="home"], [data-screen="account"]) { overflow: clip; }
+.screen:is([data-screen="home"], [data-screen="account"]) > .content {
+  min-width: 0;
+  overflow-x: clip;
+  overflow-y: visible;
+  /* No clip-path here. A negative inset (to reach under the nav) works in Chrome and Mac WebKit
+     but iOS WebKit clamps it to the box, so on the phone the list was cut at the nav's top edge
+     and the nav's glass had nothing behind it (simulator Safari, 2026-10-11: with clip-path off,
+     the rows show through the frosted nav). The screen's own overflow: clip ends it at the
+     screen's bottom; above, the opaque header covers the top. */
+}
+.screen[data-screen="home"] > .home-content { display: flow-root; }
+/* During a sideways swipe the screen coming in has no bars (.drag-peek hides them; the leaving
+   screen's bars stay put) and it sits ABOVE the leaving screen. With no nav of its own, the rows
+   its window runs on under the nav slid straight across the leaving screen's icon bar (owner,
+   2026-10-17, scan/qr -> home: "it shows a faded/gradient pill box briefly"). While it peeks,
+   clip .content to its own box, which ends at the nav's top edge. A plain inset(0): iOS WebKit
+   keeps that one (it only clamps negative insets, see above). It moves with the slide, because
+   the transform is on .content itself. Off again the moment the screen lands, when its own nav
+   is back over those rows. */
+.screen:is([data-screen="home"], [data-screen="account"]).drag-peek > .content { clip-path: inset(0); }
+/* The window's overshoot reaches the screen's bottom edge, and on the phone the white nav stops
+   one device pixel short of it (rounding of the scaled phone; the frosted nav, a layer of its
+   own, does not). With the nav white at the top of the list (frosted-bars.js, 2026-10-17), the
+   tips of the next row's letters showed in that last pixel row. A 1px white strip on top. */
+.screen:is([data-screen="home"], [data-screen="account"])::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1px;
+  background: #fff; z-index: 61; pointer-events: none;
+}
+.leader-wrap  { height: calc(var(--leader-window-height) + var(--inner-under-nav, 0px)); }
+.leader-list  { padding-bottom: calc(var(--leader-list-bottom-pad) + var(--inner-under-nav, 0px)); }
+.history-wrap { height: calc(var(--history-window-height) + var(--inner-under-nav, 0px)); }
+.history-list { padding-bottom: calc(var(--history-list-bottom-pad) + var(--inner-under-nav, 0px)); }
+/* History open lifted the account content to z-index 61, over the bars, to clear the account
+   header's feather. That feather is retired, and over the nav the window would now paint on top
+   of it. Back to .content's own 5, under both bars. */
+.screen[data-screen="account"] > .account-content.history-open { z-index: 5; }
+
+/* The lists' own heads ("LEADERBOARD +", "HISTORY +") behave like the top bar (owner,
+   2026-10-10): plain white with no line at rest; while the list below is scrolled away from
+   its top, --glass-white + the same blur, and the hairline fades in on the head's bottom edge.
+   frosted-bars.js toggles .is-under. Their white fade-out ::after is retired, and the titles
+   lose their own white so the head's glass is what shows. */
+/* The band (white or glass) and its hairline run the full screen width, edge to edge like the
+   top bar's (owner, 2026-10-10), while the title, search and x stay in their column. So they
+   live on a ::before behind the head's own content (z-index -1 inside the head's z-index 8),
+   reaching out through the page gutter to the screen's edges. The head itself is transparent. */
+.leader-head,
+.history-head {
+  background: transparent;
+  /* The band reaches 8px above and below the head's box (owner: the search pill was sitting on
+     the line), so the pill, HISTORY and x sit centred with equal clear space and the hairline
+     runs 8px under them. Only the band grows; the head's box, and so every row, stays put. */
+  --head-band-pad: 8px;
+}
+.leader-head::before,
+.history-head::before {
+  content: "";
+  position: absolute;
+  top: calc(-1 * var(--head-band-pad));
+  bottom: calc(-1 * var(--head-band-pad));
+  /* exactly the screen: the head sits in the page gutter on both sides. Not -100vw: a blur is
+     computed over the band's whole box, so a 3-screen band tripled the cost on every scroll frame. */
+  left: calc(-1 * var(--page-pad));
+  right: calc(-1 * var(--page-pad));
+  z-index: -1;
+  pointer-events: none;
+  background-color: rgba(255, 255, 255, 0);   /* nothing is behind it at rest: reads as the white page */
+  box-shadow: inset 0 -1px 0 rgba(191, 194, 198, 0);
+  transition: background-color .2s ease, box-shadow .2s ease;
+}
+/* The list heads sit mid-page over grey pills with drop shadows; the thin, light glass the top
+   and bottom bars use turned those into grey smudges here (owner, 2026-10-11: "leaderboard still
+   looks shit"). So the heads get their own material, close to iOS's: mostly white and a strong
+   blur, rows passing as a soft hint, not blotches. */
+.leader-head,
+.history-head {
+  --head-glass-white: rgba(255, 255, 255, .94);
+  --head-glass-filter: saturate(140%) blur(24px);
+}
+.leader-head.is-under::before,
+.history-head.is-under::before {
+  background-color: var(--head-glass-white);
+  -webkit-backdrop-filter: var(--head-glass-filter);
+  backdrop-filter: var(--head-glass-filter);
+  box-shadow: inset 0 -1px 0 var(--box-stroke);
+}
+/* A short feather under the hairline (owner: "add some feather in there if needed"), so rows
+   dissolve into the bar instead of meeting the line hard. Only while the bar is frosted. */
+.leader-head::after,
+.history-head::after {
+  content: "";
+  display: block;            /* an older rule hid History's fade; both lists now share this one */
+  position: absolute;
+  top: calc(100% + var(--head-band-pad));
+  bottom: auto;
+  left: calc(-1 * var(--page-pad));
+  right: calc(-1 * var(--page-pad));
+  height: 12px;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, .7), rgba(255, 255, 255, 0));
+  opacity: 0;
+  transition: opacity .2s ease;
+}
+.leader-head.is-under::after,
+.history-head.is-under::after { opacity: 1; }
+/* Your own row (the pink-to-purple pill) behind a glass bar: frosted-bars.js sets .me-under-*
+   and the bar is plain white at once, so the pill never blurs into it as a pink smear (owner,
+   2026-10-17). Back to glass with the usual 200 ms fade once it has passed. The heads' band is
+   see-through at rest, so it needs real white here, with the hairline and feather kept. */
+.screen.me-under-top > .top,
+.screen.me-under-bottom > .bottom-nav { transition: none; }
+.leader-head.me-under::before,
+.history-head.me-under::before {
+  background-color: #fff;
+  box-shadow: inset 0 -1px 0 var(--box-stroke);
+  transition: none;
+}
+.leader-head.me-under::after,
+.history-head.me-under::after { opacity: 1; transition: none; }
+/* The leaderboard head no longer turns to glass (owner, 2026-10-18: "a little flash of stuff
+   underneath the leaderboard title that is the frosted glass thing. remove it"). While the list
+   is scrolled its band is plain white, switched at once: rows simply pass out of sight under the
+   title, with no blur, no hairline and no feather fading in. At rest the band stays see-through
+   over the white page, as before, so nothing around it changes (the + expand included). History
+   keeps its glass. */
+.leader-head.is-under::before,
+.leader-head.me-under::before {
+  background-color: #fff;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+  transition: none;
+}
+.leader-head::after,
+.leader-head.is-under::after,
+.leader-head.me-under::after { opacity: 0; transition: none; }
+/* .history-wrap clipped all round (overflow: hidden), which would cut the History band at the
+   list's width. It now clips only top and bottom: the list still ends at the window's edges,
+   and the band reaches the screen's. */
+.history-wrap {
+  overflow: visible;
+  /* No clip-path: the list (.history-list) clips its own rows; a negative-inset clip-path would
+     be clamped to the window on iOS and cut the head's full-width band and its 8px reach. */
+}
+.leader-head > .leader-title,
+.history-head > .history-title { background: transparent; }
+/* ...and rows really pass behind them, as content passes behind the top bar. Each list is
+   pulled up under its head by --head-pull (= the head's height + the gap below it) and gets
+   that much more padding-top, so at rest every row sits exactly where it did. The heads
+   (z-index 8) stay above the lists.
+   Leaderboard: the window itself moves up (margin-top 8px -> 8px - pull). app.js sizes the
+   window from its own top down to the nav, so it comes out taller by the same amount and its
+   bottom stays put, collapsed and expanded.
+   History: the head sits inside .history-wrap, so the list moves up within it. height:auto
+   (stretch) instead of 100% so the negative margin makes it taller, not just higher. */
+/* The window's top edge sits 4px INSIDE the band, not on its top edge. On a phone narrower than
+   the 393px design the whole app is scaled (.phone, --fit < 1), and iOS then rounds the list's
+   clip and the band's top to different pixels: a 1pt strip of rows showed ABOVE the band, a
+   slit cut off from the head (owner, 2026-10-13, a 390pt iPhone; measured on the iPhone 16e
+   simulator: 3 device px in 164 of 776 scroll frames; 0 on the 402pt iPhone 17, where --fit = 1).
+   The rows under the band's top 4px are behind ~94% white glass anyway; at rest every row stays
+   exactly where it was (padding-top below takes the same value). */
+.leaderboard { --head-pull: 42px; }        /* .leader-head 30px (the + button) + .leader-wrap's 8px + 4px of the band's 8px reach above */
+.history-wrap { --head-pull: 44px; }       /* .history-head 32px (the search pill) + the grid's 8px gap + 4px of the band's 8px reach above */
+.leader-wrap { margin-top: calc(8px - var(--head-pull)); }
+.leader-list,
+.history-list { padding-top: calc(14px + var(--head-pull)); }
+.history-list { margin-top: calc(-1 * var(--head-pull)); height: auto; align-self: stretch; }
+@media (prefers-reduced-motion: reduce) {
+  .leader-head::before, .history-head::before, .leader-head::after, .history-head::after { transition: none; }
+}
+
+/* A giving partner's name, linked to its own website (app.js partnerLink; owner, 2026-10-16).
+   Same type as the plain name it replaces, underlined; the tap opens the in-app browser. */
+a.partner-link {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: currentColor;
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+}
+a.partner-link:active { opacity: .6; }
+
+/* "Cashback pending" note (app.js pendingNote; owner, 2026-10-16): tap the pending card and the
+   note comes to the front, in the app's own pop-out card (.hug-confirm-*, as the cash-out
+   question uses), with one full-width button. */
+.account-main .simple-row.wide.pending { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.pending-note .hug-confirm-title { margin-bottom: 10px; }
+.pending-note-amount { margin: -2px 0 12px; font-family: var(--font-ui); font-weight: 700; font-size: 28px; line-height: 1.1; letter-spacing: -.01em; color: var(--ink); font-variant-numeric: tabular-nums; }
+.pending-note-line { margin: 0 0 8px; font-size: 14px; line-height: 1.45; color: var(--muted); }
+.pending-note-line:last-of-type { margin-bottom: 20px; }
+.pending-note .hug-confirm-actions { grid-template-columns: 1fr; }
+.pending-note .hug-confirm-ok:focus { outline: none; }  /* focused on open for Esc/Enter; a one-button note needs no ring */

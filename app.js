@@ -1,3 +1,220 @@
+/* ── ONE REVEAL, WHEN THE FIRST SCREEN IS WHOLE ────────────────────────────────────────
+   The complaint: the app "loads in different parts, at different speeds" instead of arriving
+   as one page. Filmed, it was worse than that sounds. On a phone a launch went black (the old
+   launch screen) -> grey -> plain white -> a page with a "refer a friend to climb the
+   leaderboard" line that was not true -> the real leaderboard rows ~1.5s later, pushing that
+   line down. The web curtain lifted after a fixed 300ms whether or not anything was ready,
+   so every part that arrived after that was seen arriving.
+
+   Now the app keeps a short checklist of what the first screen needs, and each part ticks
+   itself off when it is drawn in its FINAL form — from cache when there is one, from the
+   server when there is not. Only when the list is empty does the cover lift, in one move.
+   Parts:
+     account      whose account this is (local + the durable mirror)
+     balance      the money pill: a known figure, or a failed read
+     points       the eco points hero
+     leaderboard  real rows (cached or fetched), or a real answer — never the empty-state guess
+     assets       the first screen's pictures decoded and fonts ready
+     i18n         the saved language applied (non-English only)
+   The cover is the native launch screen on a phone (see HugBridgeViewController) and the web
+   curtain in index.html in a browser. Either way the page underneath is built while covered.
+
+   It can never hang: BOOT_REVEAL_MAX_MS lifts it regardless. A returning user has every part
+   in cache, so for them this costs nothing — the list empties as soon as the durable read
+   lands. Only a genuinely cold launch waits on the network, and it waits on a calm logo
+   screen instead of on a half-drawn page. */
+(function bootGate() {
+  // 2000, not 1200. A cold launch on a phone is two round trips — a stale session is refreshed
+  // first, then the reads go out — and at 1200 the cover lifted between them, so the parts still
+  // in flight arrived on the open page. The native cover's own failsafe (launchCoverMaxSeconds in
+  // AppDelegate.swift) must stay above this plus the fade; scripts/launch-guard-test.mjs holds the
+  // pair together.
+  var BOOT_REVEAL_MAX_MS = 2000;
+  var h = document.documentElement;
+  // Hold ids are kebab tokens on purpose: tools/i18n/extract.mjs reads every string literal in
+  // this file as potential UI copy, and a bare word like "leaderboard" would be queued for
+  // translation into 20 languages. It treats kebab tokens as code.
+  var holds = new Set(["boot-account", "boot-balance", "boot-points", "boot-leaderboard", "boot-assets", "boot-i18n", "boot-safe-area"]);
+  var revealed = false, waiters = [], t0 = (window.performance && performance.now()) || 0;
+  // When each part ticked off, in ms since page start. Kept (it is tiny) so a slow launch on a
+  // real phone can be read back: the reveal writes it to the console and to HugDiag.
+  var timeline = [["app.js", Math.round(t0)]];
+  function now() { return Math.round((window.performance && performance.now()) || 0); }
+  function reveal(reason) {
+    if (revealed) return;
+    revealed = true;
+    window.__hugBoot.reason = reason;
+    window.__hugBoot.at = ((window.performance && performance.now()) || 0) - t0;
+    timeline.push(["reveal:" + reason, now()]);
+    var summary = timeline.map(function (e) { return e[0] + "@" + e[1]; }).join(" ") +
+      (holds.size ? " || waiting " + Array.from(holds).join(",") : "");
+    try { console.info("[hug-boot] " + summary); } catch (e) {}
+    try { if (window.HugDiag && window.HugDiag.mark) window.HugDiag.mark("boot_reveal", summary); } catch (e) {}
+    var native = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+    try {
+      if (native) {
+        // The native cover sits over everything. Drop the web curtain INSTANTLY underneath it
+        // (a second fade would only be seen as a flicker at the edges), let the compositor
+        // present the finished page for two frames, then ask native to fade its cover.
+        h.classList.add("hug-boot-instant");
+        h.classList.remove("hug-boot-pending");
+        h.classList.remove("hug-boot-curtain-live");
+        requestAnimationFrame(function () { requestAnimationFrame(function () {
+          var HL = window.HugLaunch || (window.Capacitor.Plugins && window.Capacitor.Plugins.HugLaunch);
+          // Tell native exactly where the page drew its wordmark, so the cover's copy lands on
+          // it during the fade. They match already at 393pt+; narrower phones scale the page
+          // (fitToViewport) and would otherwise show a few-point jump.
+          var logo = null;
+          try {
+            var img = document.querySelector('.screen[data-screen="home"] .logo img');
+            var r = img && img.getBoundingClientRect();
+            if (r && r.width > 0 && r.height > 0) logo = { x: r.left, y: r.top, w: r.width, h: r.height };
+          } catch (e) {}
+          try { if (HL && HL.reveal) HL.reveal(logo ? { duration: 260, logo: logo } : { duration: 260 }); } catch (e) {}
+        }); });
+      } else {
+        h.classList.remove("hug-boot-pending");      // starts the 260ms web fade
+        // Outlast the fade before dropping the logo's raised stacking, or the wordmark greys
+        // out behind a sheet that is still partly opaque.
+        setTimeout(function () { try { h.classList.remove("hug-boot-curtain-live"); } catch (e) {} }, 400);
+      }
+    } catch (e) {}
+    var w = waiters; waiters = [];
+    for (var i = 0; i < w.length; i++) { try { w[i](); } catch (e) {} }
+  }
+  // If the cap had to lift the cover before a part was ready (a first launch on a slow
+  // network), that part will arrive on a page the user is already looking at. It then fades in
+  // over 240ms instead of snapping in, so a late arrival reads as the page settling rather
+  // than as a piece that failed to load. Started in rAF, i.e. before the frame that first
+  // paints the new content, so that frame is already at opacity 0 — there is no flash first.
+  var LATE = {
+    "boot-balance": '.screen[data-screen="home"] .impact-value',   // the stats hang off the referral count
+    "boot-points": '.points-block .points',
+    "boot-leaderboard": '.screen[data-screen="home"] .leader-list'
+  };
+  function lateIn(sel) {
+    if (!sel) return;
+    requestAnimationFrame(function () {
+      try {
+        document.querySelectorAll(sel).forEach(function (el) {
+          if (el.animate) el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 240, easing: "ease-out" });
+        });
+      } catch (e) {}
+    });
+  }
+  window.__hugBoot = {
+    release: function (name) {
+      if (!holds.delete(name)) return;
+      timeline.push([name, now()]);
+      if (revealed) { lateIn(LATE[name]); return; }
+      if (!holds.size) reveal("ready");
+    },
+    // Run `cb` once the page is showing. Anything that MOVES on its own (intro animations)
+    // belongs here, so it starts on a page the user can see, not under the cover.
+    onReveal: function (cb) { if (revealed) { try { cb(); } catch (e) {} } else waiters.push(cb); },
+    pending: function () { return Array.from(holds); },
+    timeline: function () { return timeline.slice(); },
+    get revealed() { return revealed; }
+  };
+  setTimeout(function () { reveal("cap"); }, BOOT_REVEAL_MAX_MS);
+
+  // i18n: the head script adds hug-i18n-pending only for a saved non-English language, and the
+  // engine removes it once the page is translated.
+  if (!h.classList.contains("hug-i18n-pending")) window.__hugBoot.release("boot-i18n");
+  else new MutationObserver(function (_, mo) {
+    if (h.classList.contains("hug-i18n-pending")) return;
+    mo.disconnect(); window.__hugBoot.release("boot-i18n");
+  }).observe(h, { attributes: true, attributeFilter: ["class"] });
+
+  // status bar: on an iPhone the WebView learns its status-bar inset (env(safe-area-inset-top),
+  // which every header's padding is built on) a few hundred ms AFTER the page can be ready.
+  // Measured on the iPhone 16e simulator (2026-10-15): the reveal was asked for at 86 ms, the
+  // inset read 0 until 451 ms, then 47 px. Lifting the cover in between showed the whole page
+  // 47 pt too high for the first frames of the fade and then dropped it into place (owner: "the
+  // contents ... very quickly jitter in"), and the cover's wordmark faded out beside a page
+  // wordmark that was still too high. So on iOS the cover waits for the inset; the
+  // BOOT_REVEAL_MAX_MS cap still lifts it regardless. Every portrait iPhone has a status bar, so
+  // the inset is never legitimately 0 there. Nothing waits anywhere else (a browser, or Android,
+  // may truly have 0).
+  (function waitForStatusBarInset() {
+    var C = window.Capacitor;
+    var ios = false;
+    try { ios = !!(C && C.getPlatform && C.getPlatform() === "ios"); } catch (e) {}
+    if (!ios) { window.__hugBoot.release("boot-safe-area"); return; }
+    var probe = document.createElement("div");
+    probe.setAttribute("aria-hidden", "true");
+    probe.style.cssText = "position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none;padding-top:env(safe-area-inset-top,0px)";
+    (document.body || h).appendChild(probe);
+    (function check() {
+      var top = 0;
+      try { top = parseFloat(getComputedStyle(probe).paddingTop) || 0; } catch (e) {}
+      if (top > 0 || window.__hugBoot.revealed) {
+        try { probe.remove(); } catch (e) {}
+        window.__hugBoot.release("boot-safe-area");
+        return;
+      }
+      requestAnimationFrame(check);
+    })();
+  })();
+
+  // assets: every picture on the home screen decoded, and web fonts settled. decode() rather
+  // than onload: a loaded image can still paint a frame late on first use while it decodes.
+  function settleAssets() {
+    var imgs = Array.prototype.slice.call(document.querySelectorAll('.screen[data-screen="home"] img:not([loading="lazy"])'));
+    var jobs = imgs.map(function (img) { return img.decode ? img.decode().catch(function () {}) : Promise.resolve(); });
+    if (document.fonts && document.fonts.ready) jobs.push(document.fonts.ready.catch(function () {}));
+    Promise.all(jobs).then(function () { window.__hugBoot.release("boot-assets"); });
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", settleAssets, { once: true });
+  else settleAssets();
+})();
+
+/* ── the HUG tick, inline in a line of text ──────────────────────────────────────────
+   Every dictionary keys on the English string WITH its tick in it ("copied \u2713",
+   "\u2713 available"), and each translation carries the tick in the right place for that
+   language. So: translate first, THEN swap the character for the drawn mark. Nothing
+   below uses innerHTML, so no string can smuggle markup in.
+   Defined guarded, because several files may be the first one loaded. */
+window.hugTickEl = window.hugTickEl || function () {
+  var NS = 'http://www.w3.org/2000/svg';
+  var s = document.createElementNS(NS, 'svg');
+  s.setAttribute('viewBox', '0 0 24 24');
+  s.setAttribute('class', 'hug-tick');
+  s.setAttribute('aria-hidden', 'true');
+  var p = document.createElementNS(NS, 'path');
+  p.setAttribute('fill', 'currentColor');
+  p.setAttribute('d', 'M18.16 4 C18.35 3.96 18.46 3.98 18.58 4 C18.69 4.02 18.8 4.06 18.87 4.11 C18.93 4.16 18.98 4.23 18.99 4.3 C19 4.38 19.36 3.93 18.94 4.57 C18.52 5.21 17.21 6.98 16.47 8.14 C15.73 9.3 15.13 10.33 14.49 11.53 C13.86 12.73 13.1 14.37 12.66 15.35 C12.21 16.33 12.07 16.74 11.81 17.42 C11.55 18.1 11.26 19.06 11.11 19.44 C10.96 19.83 11 19.65 10.91 19.73 C10.83 19.81 10.72 19.87 10.6 19.92 C10.49 19.96 10.35 19.99 10.21 20 C10.07 20.01 9.9 20.01 9.76 19.97 C9.62 19.93 9.69 20.2 9.36 19.77 C9.04 19.34 8.3 18.09 7.79 17.4 C7.28 16.7 6.74 16.1 6.31 15.6 C5.88 15.11 5.43 14.66 5.22 14.42 C5.01 14.19 5.09 14.25 5.05 14.18 C5.02 14.1 4.99 14.06 5.01 13.97 C5.03 13.88 5.09 13.74 5.19 13.65 C5.3 13.55 5.47 13.46 5.63 13.42 C5.78 13.37 5.99 13.36 6.14 13.37 C6.29 13.39 6.36 13.4 6.51 13.5 C6.67 13.6 6.8 13.68 7.07 13.97 C7.34 14.25 7.67 14.6 8.12 15.21 C8.57 15.82 9.48 17.2 9.78 17.63 C10.09 18.05 9.91 17.75 9.96 17.76 C10.02 17.77 10.07 17.75 10.12 17.7 C10.17 17.65 10.09 17.91 10.26 17.48 C10.44 17.05 10.85 15.92 11.19 15.11 C11.53 14.29 11.93 13.39 12.3 12.61 C12.67 11.82 13.07 11.03 13.42 10.38 C13.76 9.72 13.95 9.37 14.37 8.66 C14.79 7.96 15.51 6.8 15.94 6.14 C16.37 5.49 16.68 5.05 16.93 4.74 C17.19 4.42 17.26 4.37 17.46 4.25 C17.67 4.13 17.98 4.04 18.16 4 Z');
+  s.appendChild(p);
+  return s;
+};
+/* Set an element's text, with any tick in it drawn rather than typed. */
+window.hugSetText = window.hugSetText || function (el, str) {
+  if (!el) return;
+  var s = String(str == null ? '' : str);
+  try { if (typeof window.hugT === 'function') s = window.hugT(s); } catch (e) {}
+  var parts = s.split('\u2713'), i;
+  el.textContent = '';
+  for (i = 0; i < parts.length; i++) {
+    if (i) el.appendChild(window.hugTickEl());
+    if (parts[i]) el.appendChild(document.createTextNode(parts[i]));
+  }
+};
+/* Swap ticks already sitting in the DOM under `root` — for blocks built as an HTML
+   string. Touches nothing but those characters. */
+window.hugTickify = window.hugTickify || function (root) {
+  if (!root || !document.createTreeWalker) return;
+  var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null), hits = [], n, i, j;
+  while ((n = w.nextNode())) { if (n.nodeValue && n.nodeValue.indexOf('\u2713') >= 0) hits.push(n); }
+  for (i = 0; i < hits.length; i++) {
+    var parts = hits[i].nodeValue.split('\u2713'), frag = document.createDocumentFragment();
+    for (j = 0; j < parts.length; j++) {
+      if (j) frag.appendChild(window.hugTickEl());
+      if (parts[j]) frag.appendChild(document.createTextNode(parts[j]));
+    }
+    hits[i].parentNode.replaceChild(frag, hits[i]);
+  }
+};
+
 /* =============================================================================
    hug — referral-rewards app prototype
    app.js  ·  all interaction + the hand-tuned transition state machine
@@ -12,6 +229,19 @@
    Asset paths are relative to index.html (see /assets).
    ============================================================================= */
 
+    // What a figure the app cannot honestly state looks like. Used wherever a read
+    // failed or has not answered yet: an em dash is not a claim, whereas "0" and
+    // "£0.00" are — and a customer cannot tell a fabricated zero from a real one.
+    const HUG_UNKNOWN = "—";
+    // Translate a WHOLE English template through the dictionary, then drop the values in.
+    // "{n} kg of ocean plastic collected" is one dictionary key, so word order can differ per
+    // language; building it by concatenation would leave fragments no dictionary can match.
+    function hugTpl(tpl, vars) {
+      let s = tpl;
+      try { if (typeof window.hugT === "function") s = window.hugT(tpl) || tpl; } catch (e) {}
+      if (vars) for (const k in vars) s = s.split("{" + k + "}").join(String(vars[k]));
+      return s;
+    }
     const phone = document.getElementById("phone");
     const globalLogo = document.querySelector("[data-go-home]");
     // Current responsive scale of the device (set by the fit helper at the
@@ -27,8 +257,12 @@
     const checkoutTotalValue = document.getElementById("checkout-total-value");
     const checkoutDiscountRow = document.getElementById("checkout-discount");
     const checkoutDiscountValue = document.getElementById("checkout-discount-value");
-    let referralApplied = false;   // referral code applied -> preview the 10% off in the total
-    const REFERRAL_DISCOUNT_RATE = 0.10;
+    let referralApplied = false;   // referral code applied -> preview the friend's discount in the total
+    // The friend's discount: a flat 5% (owner, 2026-10-13: 5% for the friend, 5% for the referrer,
+    // no £1,000 step). The preview starts at 5%; the real figure arrives with the minted code
+    // (native-bridge "hug:referral-rate") and Shopify takes off exactly that.
+    let referralFriendRate = 0.05;
+    const REFERRAL_DISCOUNT_RATE_DEFAULT = 0.05;
     const scanScreen = document.querySelector('.screen[data-screen="scan"]');
     const scanStatus = scanScreen?.querySelector(".scan-status");
     const scanRestart = scanScreen?.querySelector(".scan-restart");
@@ -90,6 +324,25 @@
     const HUG_ACCOUNT_STATE_KEY = "hug-account-state-v1";
     const HUG_ACCOUNT_EMAIL_KEY = "hug-account-email-v1";
     const HUG_REFERRAL_CODE_KEY = "hug-referral-code-v1";
+    const HUG_BALANCE_CACHE_KEY = "hug-balance-cache-v1";
+    // Your tokens — the home hero number. Cached for the same reason the balance is:
+    // it comes from the leaderboard RPC, so without one it reads 0 until the network lands.
+    // Renamed from "hug-points-cache-v1" when eco points became tokens: the figure's meaning
+    // changed (25 per mug became 6), so an old cached "375" must never be read as tokens.
+    const HUG_POINTS_CACHE_KEY = "hug-tokens-cache-v1";
+    // HUG Giving. The public facts (causes, token value) and this account's own split, cached and
+    // mirrored like the balance: the home row and the impact screen both lead with them, so a
+    // part that waits for the network pops in late. The account's copy is cleared on sign-out.
+    const HUG_GIVING_OVERVIEW_KEY = "hug-giving-overview-v1";
+    const HUG_GIVING_MINE_KEY = "hug-giving-mine-v1";
+    // The home impact row's last-viewed panel ({ who, panel }), written by impactRow. Per account,
+    // mirrored, and cleared with the rest of the account's state on sign-out.
+    const HUG_IMPACT_PANEL_KEY = "hug-impact-panel-v1";
+    // The last leaderboard this device drew. Mirrored like the balance and the points: it was
+    // the ONE part of the first screen kept only in localStorage, so after a WebKit eviction
+    // every other part came back from the durable copy and the board alone waited on the
+    // network — "the leaderboard loads the slowest". Written by leaderboardFeature below.
+    const HUG_LEADERBOARD_CACHE_KEY = "hug-leaderboard-cache-v2";   // v2: rows are tokens now, not eco points
 
     // Stay signed in across launches (the device lock is the auth) — the session
     // persists in Capacitor Preferences and is restored on boot; the user only
@@ -102,8 +355,14 @@
     window.addEventListener("load", function () {
       if (!HUG_ALWAYS_SIGNED_OUT_ON_BOOT) return;
       try {
-        [HUG_ACCOUNT_STATE_KEY, HUG_ACCOUNT_EMAIL_KEY, HUG_REFERRAL_CODE_KEY, HUG_LINKED_PRODUCTS_KEY, "hug-demo-mode"]
-          .forEach(function (k) { try { localStorage.removeItem(k); } catch (e) {} });
+        // Both stores, or the reset does not reset: the durable mirror outlives
+        // localStorage by design, so clearing only localStorage leaves the account to be
+        // restored from the mirror on the very next boot.
+        [HUG_ACCOUNT_STATE_KEY, HUG_ACCOUNT_EMAIL_KEY, HUG_REFERRAL_CODE_KEY, HUG_LINKED_PRODUCTS_KEY, HUG_BALANCE_CACHE_KEY, HUG_POINTS_CACHE_KEY, HUG_GIVING_MINE_KEY, HUG_IMPACT_PANEL_KEY, "hug-demo-mode"]
+          .forEach(function (k) {
+            try { localStorage.removeItem(k); } catch (e) {}
+            durableRemove(k);
+          });
         // Wipe the displayed legacy linked products + purchases immediately (don't
         // wait for the async signOut), so a fresh boot never flashes stale data.
         try { clearHugLinkedProducts(); } catch (e) {}
@@ -118,9 +377,10 @@
     // this app's own localStorage keys and reloads, returning the app to guest
     // mode for testing. Uses the key constants above so nothing is hardcoded.
     window.hugDebugReset = function () {
-      const keys = [HUG_LINKED_PRODUCTS_KEY, HUG_ACCOUNT_STATE_KEY, HUG_ACCOUNT_EMAIL_KEY, HUG_REFERRAL_CODE_KEY];
+      const keys = [HUG_LINKED_PRODUCTS_KEY, HUG_ACCOUNT_STATE_KEY, HUG_ACCOUNT_EMAIL_KEY, HUG_REFERRAL_CODE_KEY, HUG_BALANCE_CACHE_KEY, HUG_POINTS_CACHE_KEY, HUG_GIVING_MINE_KEY, HUG_IMPACT_PANEL_KEY];
       keys.forEach(function (key) {
         try { localStorage.removeItem(key); } catch (e) {}
+        durableRemove(key);   // the mirror too, or the next boot restores what this cleared
       });
       console.log("hugDebugReset: cleared", keys);
       // Also end the Supabase session (if the backend is wired) before reloading.
@@ -132,14 +392,28 @@
       "thehuggable.co",
       "www.thehuggable.co"
     ]);
-    const HUG_PRODUCT_CATALOG = Object.freeze({
+    // Phase 1B: a build-time flag baked into the bundle (hug-flags.js, generated
+    // by scripts/build.mjs) marks a production build. Read once at boot; fails
+    // CLOSED — a missing/unknown stamp is treated as production (strictest). The
+    // demo/test QR affordances below (synthetic test SKUs; linking a product
+    // WITHOUT an atomic server claim) exist only when this is false.
+    const IS_PRODUCTION_BUILD = (function () {
+      try {
+        const b = window.__HUG_BUILD__ || {};
+        if (window.__HUG_DEMO__ === true) return false;
+        return b.env ? b.env === "production" : true;
+      } catch (e) { return true; }
+    })();
+    const HUG_PRODUCT_CATALOG = Object.freeze(Object.assign({
       "HUG-DR-001": Object.freeze({ productName: "hugo", colourName: "dark roast" }),
       "HUG-BC-001": Object.freeze({ productName: "hugo", colourName: "blue crush" }),
       "HUG-CP-001": Object.freeze({ productName: "hugo", colourName: "cherry pop" }),
-      "HUG-LD-001": Object.freeze({ productName: "hugo", colourName: "lemon drop" }),
+      "HUG-LD-001": Object.freeze({ productName: "hugo", colourName: "lemon drop" })
+    }, IS_PRODUCTION_BUILD ? {} : {
+      // Non-production only: synthetic test SKUs for demo/dev scanning.
       "HUG-TEST-001": Object.freeze({ productName: "hugo", colourName: "dark roast" }),
       "HUG-TEST-002": Object.freeze({ productName: "hugo", colourName: "blue crush" })
-    });
+    }));
     let linkedProducts = [];
     let accountStatus = "guest";
     let accountEmail = null;
@@ -148,31 +422,162 @@
     let referralPendingCents = 0;
     let referralCashedOutCents = 0;
     let referralRewardCount = 0;
+    /* Do we actually KNOW this signed-in user's balance yet (seeded from cache, or the
+       server answered)? On the very first launch after an update there is no cache, and
+       painting "£0.00" would state something false about their money. Until it is known
+       the pill renders blank and fills in when the figure arrives. Guests legitimately
+       show £0.00 — this only gates the signed-in unknown window. */
+    let balanceKnown = false;
+    /* …and do we even know WHOSE account this is yet?
+       "Guest" is only an honest answer when the device actually says so. When localStorage
+       holds no account status at all, the two possibilities — a genuine first run, and a
+       signed-in user whose localStorage was evicted — are indistinguishable until the
+       durable mirror is read a few ms later. Treating that as "guest" is what let the app
+       state £0.00 as fact about someone's money before it had any idea who they were.
+       So the whole account state, not just the figure, is UNKNOWN for that window: the pill
+       stays blank rather than asserting a zero it may have to take back. Cleared by
+       restoreDurableAccountState() either way, so it can never stick. */
+    let bootAccountStateUnknown = false;
 
-    // ---- Prototype/demo mode -------------------------------------------------
-    // A Settings toggle flips between a totally FRESH account experience (empty,
-    // real) and a fully-populated PROTOTYPE. localStorage overrides the build
-    // default (window.__HUG_DEMO__ from hug-flags.js). Demo data is display-only:
-    // it never persists account state or calls the backend.
-    function isDemoMode() {
-      // Prototype/demo mode retired — the app always runs against real accounts.
-      return false;
+    // ---- Prototype mode ------------------------------------------------------
+    // Shows the app as it will look once it is full of people, referrals and money — so it can
+    // be demonstrated before that is true. Ruary, 2026-10-01: "so i can show what the referral
+    // app will look like once it is populated with more people and results".
+    //
+    // WHO CAN TURN IT ON is decided on the server, not here: the referrals.prototype capability
+    // (owners always; anyone else by a per-person grant on the admin access page), reported by
+    // the referral_app_access() RPC. The app keeps that answer for the signed-in email and shows
+    // the Settings switch only when it says yes.
+    //
+    // IT FAILS CLOSED. Prototype mode is on only when ALL of these hold, read once before
+    // anything renders: this device chose "on", a real account is signed in, and the server's
+    // last answer said yes FOR THAT SAME EMAIL. A missing answer, an answer for another account,
+    // or a signed-out device is "off" — whatever the switch was left on. If the server later says
+    // no (access removed), refreshPrototypeAccess() switches it off and reloads into the real
+    // account.
+    //
+    // IT IS DISPLAY-ONLY. The sample world below lives in this bundle. While it is on, the
+    // backend is never synced over it, and every write to the server is refused at the bridge
+    // (native-bridge.js, prototypeGuard) — so nothing done in prototype can touch the real
+    // account, the real referral ledger or a real order.
+    //
+    // Decided once per launch because roughly a dozen features read it while they build the
+    // page; changing it means a reload, which the launch curtain covers.
+    const HUG_PROTOTYPE_MODE_KEY = "hug-demo-mode";              // "on" | "off" — this device's choice
+    const HUG_PROTOTYPE_ACCESS_KEY = "hug-prototype-access-v1";  // { email, prototype, at } — the server's answer
+    const normEmail = (e) => String(e || "").trim().toLowerCase();
+    function loadPrototypeAccess() {
+      try {
+        const a = JSON.parse(localStorage.getItem(HUG_PROTOTYPE_ACCESS_KEY) || "null");
+        return a && typeof a === "object" ? a : null;
+      } catch (error) { return null; }
     }
+    function prototypeAllowedFor(email) {
+      const a = loadPrototypeAccess();
+      return !!(a && a.prototype === true && normEmail(email) && normEmail(a.email) === normEmail(email));
+    }
+    function savePrototypeAccess(email, allowed) {
+      try {
+        localStorage.setItem(HUG_PROTOTYPE_ACCESS_KEY, JSON.stringify({ email: normEmail(email), prototype: !!allowed, at: Date.now() }));
+      } catch (error) { /* best-effort: without it the switch simply stays hidden */ }
+    }
+    function setPrototypeMode(on) {
+      try { localStorage.setItem(HUG_PROTOTYPE_MODE_KEY, on ? "on" : "off"); } catch (error) {}
+    }
+    // Sign-out ends prototype mode and forgets the permission: the next person to sign in on
+    // this device must be asked about afresh, never inherit someone else's yes.
+    function clearPrototypeAccess() {
+      try { localStorage.removeItem(HUG_PROTOTYPE_ACCESS_KEY); } catch (error) {}
+      setPrototypeMode(false);
+    }
+    const PROTOTYPE_ON = (function () {
+      try {
+        if (localStorage.getItem(HUG_PROTOTYPE_MODE_KEY) !== "on") return false;
+        if (localStorage.getItem(HUG_ACCOUNT_STATE_KEY) !== "active") return false;
+        return prototypeAllowedFor(localStorage.getItem(HUG_ACCOUNT_EMAIL_KEY));
+      } catch (error) { return false; }
+    })();
+    const PROTOTYPE_EMAIL = PROTOTYPE_ON ? normEmail(localStorage.getItem(HUG_ACCOUNT_EMAIL_KEY)) : "";
+    function isDemoMode() { return PROTOTYPE_ON; }
     window.__hugIsDemo = isDemoMode;
-    document.documentElement.dataset.demo = isDemoMode() ? "on" : "off";
+    document.documentElement.dataset.demo = PROTOTYPE_ON ? "on" : "off";
+
+    /* THE SAMPLE WORLD. One self-consistent picture of a busy app, so every screen ties up:
+       the referral history is the money (the balance and the account cells are summed from it),
+       the tokens obey the real scale (6 per linked hug + 1 per referral — the same formula
+       as referral_leaderboard()), and the leaderboard puts "you" at a believable place in a
+       long, realistic tail of other people. Deterministic (seeded), so it is the same picture on
+       every launch and in every screenshot. */
+    const DEMO_REFERRAL_ORDERS = 268;   // every referral ended in an order (see applySummary)
     const DEMO = {
-      mugs: 6,                 // -> 240 bottles / 24 kg / 6 trees
-      points: 204,   // == demo referral/order count; home POINTS == leaderboard "you" (DEMO_ROWS reads this)
-      availableCents: 4250,    // fallback only — demo balance is derived from the history txns
-      pendingCents: 1200,
-      cashedOutCents: 90000,
-      referralCode: "HUGDEMO",
-      name: "ruary",
-      email: "ruary@thehuggable.co",
+      linkedCodes: ["HUG-DR-001", "HUG-CP-001", "HUG-BC-001", "HUG-LD-001"],
+      referrals: DEMO_REFERRAL_ORDERS,
+      get mugs() { return this.linkedCodes.length; },
+      get points() { return 6 * this.mugs + 1 * this.referrals; },   // tokens == leaderboard "you" == home hero (6x4 + 1x268 = 292)
+      // Fallbacks only — the demo balance is summed from the history txns. They equal those sums
+      // (5% of every order: 505 mugs x £1.50 = £757.50), so a paint before the history builds
+      // states the same figures (scripts/referral-rate-test.mjs pins this).
+      availableCents: 10500,
+      pendingCents: 7050,
+      cashedOutCents: 58200,
+      qrScans: 3184,
+      referralCode: "HUGPROTO",
+      name: (PROTOTYPE_EMAIL.split("@")[0] || "you").replace(/[^a-z]/g, "") || "you",
+      email: PROTOTYPE_EMAIL || "you@example.com",
       bankLast4: "4471",
-      address: { "name": "Ruary Hewson", "street-address": "14 Maple Street", "city": "Bristol", "postal-code": "BS1 4ND" },
-      linkedCodes: ["HUG-DR-001", "HUG-CP-001", "HUG-BC-001"]
+      address: { "name": "", "street-address": "14 Maple Street", "city": "Bristol", "postal-code": "BS1 4ND" },
+      // Seeded generator: same sequence every launch.
+      rng(seed) { let s = seed >>> 0; return function () { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; },
+      // n distinct display names in the shapes real people choose: "maya k", "theo.b", a handle.
+      people(n, seed) {
+        const FIRST = ["maya","theo","isla","leo","ruby","finn","elsie","arlo","orla","kai","willow","jude",
+          "iris","reuben","edie","otis","maeve","jonah","etta","milo","cleo","dexter","posy","hugo","marnie",
+          "bram","cora","dax","fern","gus","hazel","juno","kit","lena","mabel","ned","opal","quinn","rory",
+          "sage","tess","uma","vera","wade","yara","zane","bea","enzo","flo","gwen","hank","imo","jett","kira",
+          "lottie","nell","ori","pia","remy","sol","tova","amara","felix","sienna","rowan","nina","omar","priya",
+          "sam","alex","jamie","noor","ezra","ada","ivy","luke","noa","eli","harriet","fatima","ben","chloe",
+          "aria","max","zara","oscar","freya","rafi","tomas","yusuf","ines","kemi","mei","sofia","lucas","hana",
+          "anya","bilal","carys","dmitri","esme","gabe","hollie","idris","jess","kofi","laila","mo","nia","olly",
+          "petra","raj","saoirse","toby","una","viktor","wren","xander","yasmin","zoe","alfie","bella","cal"];
+        const HANDLE = ["ladymoon","coffeefox","oatlatte","brewdad","flatwhite","lidlover","teaforone","mugshot",
+          "slowpour","cupcrew","beanqueen","refillrita","pocketmug","hugfan","morningsip","greenhouse",
+          "plasticfree","littlesteps","cosycup","warmhands","citycyclist","trailmix","sundayroast","kettleon"];
+        const ABC = "abcdefghijklmnoprstvwy";
+        const r = this.rng(seed), out = [], seen = new Set();
+        for (let i = 0; out.length < n && i < n * 20; i++) {
+          const f = FIRST[Math.floor(r() * FIRST.length)], x = r(), c = ABC[Math.floor(r() * ABC.length)];
+          const name = x < 0.55 ? f + " " + c : x < 0.8 ? f + "." + c : x < 0.9 ? f + "_" + c + Math.floor(r() * 90 + 10)
+            : HANDLE[Math.floor(r() * HANDLE.length)] + (r() < 0.5 ? "" : Math.floor(r() * 90 + 10));
+          if (!seen.has(name)) { seen.add(name); out.push(name); }
+        }
+        return out;
+      },
+      // The leaderboard: five people ahead of you, you, then a long tail. Tokens are always
+      // 6 per linked hug + 1 per referral, so every figure is at least 6.
+      board(n) {
+        const r = this.rng(4040), names = this.people(n, 909);
+        const rows = [1010, 805, 630, 505, 405].map((p, i) => ({ label: names[i], points: p, me: false }));
+        rows.push({ label: "you", points: this.points, me: true });
+        let prev = this.points;
+        for (let i = rows.length; i < n; i++) {
+          const t = (i - 6) / Math.max(1, n - 7);
+          const raw = 6 + (this.points * 0.86 - 6) * Math.pow(1 - t, 2.6) * (0.97 + r() * 0.06);
+          const p = Math.max(6, Math.min(prev, Math.round(raw)));
+          rows.push({ label: names[i], points: p, me: false });
+          prev = p;
+        }
+        return rows;
+      },
+      // A few of your own past orders, for Settings → purchases.
+      purchases() {
+        const DAY = 86400000, now = Date.now();
+        const mk = (ago, n, items) => ({ order_number: "#" + n, ordered_at: new Date(now - ago * DAY).toISOString(),
+          total_cents: items.length * 3000, mug_qty: items.length, items: items.map((v) => ({ title: "hug o", variant: v })) });
+        return [mk(19, 1184, ["lemon drop"]), mk(143, 1027, ["blue crush", "blue crush"]),
+          mk(311, 1006, ["cherry pop"]), mk(402, 1001, ["dark roast"])];
+      }
     };
+    DEMO.address.name = DEMO.name;
     let selectedLinkedProduct = null;
     let referralCopyTimer = null;
 
@@ -196,6 +601,10 @@
     }
 
     function saveReferralCode(code) {
+      // Mirrored for the same reason as the linked products: without the code the master
+      // QR falls back to its "set up an account" nudge, in front of somebody who has one.
+      if (code) durableSet(HUG_REFERRAL_CODE_KEY, code);
+      else durableRemove(HUG_REFERRAL_CODE_KEY);
       try {
         if (code) {
           localStorage.setItem(HUG_REFERRAL_CODE_KEY, code);
@@ -212,7 +621,7 @@
     // reads data-copy at click time, so updating the attribute is enough.
     // The canonical referral URL the master QR + copy-link encode: straight to the
     // Shopify product picker with the code, so it lands on "choose your hug",
-    // applies the friend's 10% on add-to-cart, and credits this user.
+    // applies the friend's discount on add-to-cart, and credits this user.
     // (Swap the host to a branded thehuggable.co domain once it's on Shopify.)
     function referralUrl(code) {
       return `https://zyeeke-kx.myshopify.com/products/hug-o?ref=${encodeURIComponent(code)}`;
@@ -282,10 +691,10 @@
       });
     })();
 
-    async function refreshReferralCodeFromServer() {
+    async function refreshReferralCodeFromServer(prefetched) {
       const backend = window.HugBackend;
       if (!backend?.enabled || accountStatus !== "active") return;
-      const res = await backend.getMyProfile();
+      const res = await (prefetched || backend.getMyProfile());
       if (!res.ok) return;
       if (res.referralCode) {
         referralCode = res.referralCode;
@@ -347,26 +756,67 @@
         cashedOut = active ? referralCashedOutCents : 0;
         count = active ? referralRewardCount : 0;
       }
-      window.__hugReferral = { availableCents: available, pendingCents: pending, cashedOutCents: cashedOut, count: count };
+      // A signed-in user whose balance we don't know yet gets a blank pill, not "£0.00":
+      // stating £0 would be a false claim about their money for the ~1s before the server
+      // answers on a first launch. Guests/demo are genuinely £0 and render normally.
+      // Known = we can state this figure honestly. A confirmed guest genuinely is £0.00; a
+      // signed-in user is only known once cached or fetched; and while the account state
+      // itself is still unresolved (see bootAccountStateUnknown) nothing is known at all.
+      const known = demo || (!bootAccountStateUnknown && (accountStatus !== "active" || balanceKnown));
+      // loadFailed distinguishes "not known YET" (boot, in flight — say nothing quietly)
+      // from "the read FAILED" (say nothing AND offer a retry). Without it a dropped
+      // request left the account screen sitting on £0.00 for ever, with no error and
+      // nothing to retry, and the user could not tell that from an empty account.
+      window.__hugReferral = { availableCents: available, pendingCents: pending, cashedOutCents: cashedOut, count: count, known: known, loadFailed: !known && balanceLoadFailed };
       document.querySelectorAll(".balance").forEach(el => {
-        el.textContent = formatGbpCents(available);
+        el.textContent = known ? formatGbpCents(available) : "";
       });
+      // The pill is final once it states a figure, or once the read has failed (it then
+      // stays blank on purpose). Either way it will not change again on its own.
+      if ((known || balanceLoadFailed) && window.__hugBoot) window.__hugBoot.release("boot-balance");
       if (window.__hugAccountHistory && window.__hugAccountHistory.applySummary) window.__hugAccountHistory.applySummary();
       if (window.__hugCashout) window.__hugCashout.refresh();
       if (window.__hugImpact) window.__hugImpact.load();   // referral count feeds the +1/referral impact bonus
     }
 
-    async function refreshReferralBalanceFromServer() {
+    // The balance read failed and has not since succeeded. Drives the "couldn't load —
+    // retry" state on the account screen. `if (!res.ok) return;` on its own left the
+    // screen asserting £0.00 permanently: no retry, no error, nothing to tell the user
+    // the figure was never fetched.
+    let balanceLoadFailed = false;
+    async function refreshReferralBalanceFromServer(prefetched) {
       const backend = window.HugBackend;
       if (!backend?.enabled || accountStatus !== "active") return;
-      const res = await backend.getReferralBalance();
-      if (!res.ok) return;
+      let res;
+      try {
+        res = await (prefetched || backend.getReferralBalance());
+      } catch (error) {
+        res = { ok: false };
+      }
+      if (!res || !res.ok) {
+        balanceLoadFailed = true;
+        renderReferralBalance();   // repaint so the unknown/retry state actually appears
+        return;
+      }
+      balanceLoadFailed = false;
       referralAvailableCents = res.availableCents;
       referralPendingCents = res.pendingCents;
       referralCashedOutCents = res.cashedOutCents || 0;
       referralRewardCount = res.count || 0;
+      if (window.__hugReferralRates) window.__hugReferralRates.set(res.rates || null);   // tiered rates (additive)
+      balanceKnown = true;
+      saveCachedBalance();   // so the NEXT launch paints these instead of £0.00
       renderReferralBalance();
     }
+    // The retry the account screen's "couldn't load" state calls, and one automatic
+    // attempt when the device comes back online — so a blip heals itself instead of
+    // leaving a permanent blank.
+    window.__hugRetryBalance = function () {
+      refreshReferralBalanceFromServer();
+      if (window.__hugAccountHistory && window.__hugAccountHistory.loadLive) window.__hugAccountHistory.loadLive();
+      if (window.__hugLeaderboard && window.__hugLeaderboard.load) window.__hugLeaderboard.load();
+    };
+    window.addEventListener("hug:online", () => { if (balanceLoadFailed) window.__hugRetryBalance(); });
 
     function loadHugAccountStatus() {
       try {
@@ -375,6 +825,119 @@
         console.warn("Unable to load account state", error);
         return "guest";
       }
+    }
+
+    /* Durable mirror (window.HugStore, defined by native-bridge.js).
+       localStorage is the fast path — it is synchronous, so it is what the first paint can
+       read. But on iOS WKWebView may evict it while the auth SESSION, which lives in
+       Capacitor Preferences, survives. That combination is the bug behind "it opens at
+       zero": still signed in, no idea who you are, so the pill asserts £0.00 and only
+       corrects itself once the network answers.
+       Every write below therefore goes to BOTH; the boot restore further down reads the
+       durable copy back when localStorage has lost it. Writes are fire-and-forget: the
+       mirror must never be able to delay or break the localStorage path it backs up.
+
+       They share ONE QUEUE so they land in the order they were issued. Being fire-and-forget
+       across an async bridge, the dangerous pair is adjacent: a balance save still in flight
+       when a sign-out clears the same key. Resolving out of order would leave a signed-out
+       device holding a balance on the durable shelf. Chaining costs nothing — nothing awaits
+       these — and makes that reordering impossible rather than merely unlikely. */
+    let durableQueue = Promise.resolve();
+    function durableWrite(op) {
+      durableQueue = durableQueue.then(op).catch(() => {});
+      return durableQueue;
+    }
+    function durableSet(key, value) {
+      durableWrite(() => window.HugStore?.set(key, value));
+    }
+    function durableRemove(key) {
+      durableWrite(() => window.HugStore?.remove(key));
+    }
+    // The same queue for features outside this closure (the leaderboard), so their writes land
+    // in issue order with the sign-out that clears them — the reordering guarded against above.
+    window.__hugDurable = Object.freeze({ set: durableSet, remove: durableRemove });
+
+    /* Last-known balance cache (display only).
+       The server figures arrive ~a second after launch; without a cache the first paint
+       is always £0.00 for a signed-in user, which then visibly pops to the real number.
+       We mirror each successful server refresh into localStorage (synchronous, so it is
+       readable before the first paint) and seed the in-memory figures from it at boot.
+       The server remains the authority — this only decides what is painted in the gap.
+       Cleared on sign-out so a signed-out device can never show a stale balance. */
+    function loadCachedBalance() {
+      try {
+        const raw = localStorage.getItem(HUG_BALANCE_CACHE_KEY);
+        if (!raw) return null;
+        const c = JSON.parse(raw);
+        if (!c || typeof c !== "object") return null;
+        const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+        return { availableCents: n(c.a), pendingCents: n(c.p), cashedOutCents: n(c.c), count: n(c.n) };
+      } catch (error) { return null; }
+    }
+    function saveCachedBalance() {
+      const payload = JSON.stringify({
+        a: referralAvailableCents, p: referralPendingCents,
+        c: referralCashedOutCents, n: referralRewardCount,
+      });
+      try {
+        localStorage.setItem(HUG_BALANCE_CACHE_KEY, payload);
+      } catch (error) { /* quota/private mode — cache is best-effort */ }
+      durableSet(HUG_BALANCE_CACHE_KEY, payload);
+    }
+    function clearCachedBalance() {
+      try { localStorage.removeItem(HUG_BALANCE_CACHE_KEY); } catch (error) {}
+      durableRemove(HUG_BALANCE_CACHE_KEY);
+    }
+
+    /* Your eco points, cached on the same terms as the balance.
+       The home hero reads them out of the leaderboard's is_me row, so with no cache it
+       painted a literal 0 on every launch and corrected itself when the RPC answered —
+       the same false-figure-then-pop the balance used to do, on the number the home
+       screen leads with. Null means "not known yet", which is NOT the same as zero and
+       must not render as one. */
+    function loadCachedPoints() {
+      try {
+        const raw = localStorage.getItem(HUG_POINTS_CACHE_KEY);
+        if (raw == null || raw === "") return null;
+        const n = Number(raw);
+        return Number.isFinite(n) && n >= 0 ? n : null;
+      } catch (error) { return null; }
+    }
+    function saveCachedPoints(points) {
+      const n = Number(points);
+      if (!Number.isFinite(n) || n < 0) return;
+      try { localStorage.setItem(HUG_POINTS_CACHE_KEY, String(n)); } catch (error) {}
+      durableSet(HUG_POINTS_CACHE_KEY, String(n));
+    }
+    function clearCachedPoints() {
+      try { localStorage.removeItem(HUG_POINTS_CACHE_KEY); } catch (error) {}
+      durableRemove(HUG_POINTS_CACHE_KEY);
+    }
+    // The signed-in account's my_giving(), on the same two shelves. Sign-out wipes the
+    // on-screen copy too (givingFeature), or the next person would see this account's split.
+    function clearCachedGivingMine() {
+      try { localStorage.removeItem(HUG_GIVING_MINE_KEY); } catch (error) {}
+      durableRemove(HUG_GIVING_MINE_KEY);
+      try { localStorage.removeItem(HUG_IMPACT_PANEL_KEY); } catch (error) {}
+      durableRemove(HUG_IMPACT_PANEL_KEY);
+      if (window.__hugGiving) window.__hugGiving.forget();
+    }
+
+    /* ONE leaderboard read per refresh, shared.
+       The board and the points hero each called getLeaderboard() independently, so every
+       boot made the same request twice — and both of them waited on it before showing you
+       your own standing. Callers that arrive while a read is in flight join it instead. */
+    let leaderboardInFlight = null;
+    function fetchLeaderboardOnce() {
+      if (leaderboardInFlight) return leaderboardInFlight;
+      const backend = window.HugBackend;
+      if (!backend?.enabled) return Promise.resolve({ ok: false });
+      const p = Promise.resolve(backend.getLeaderboard()).catch(() => ({ ok: false }));
+      leaderboardInFlight = p;
+      // Released once settled, so a later account change still re-reads rather than
+      // replaying this boot's answer forever.
+      p.then(() => { if (leaderboardInFlight === p) leaderboardInFlight = null; });
+      return p;
     }
 
     function loadHugAccountEmail() {
@@ -403,6 +966,15 @@
         saveReferralCode("");
         referralAvailableCents = 0;
         referralPendingCents = 0;
+        referralCashedOutCents = 0;
+        referralRewardCount = 0;
+        clearCachedBalance();   // never let a signed-out device paint a stale balance
+        clearCachedPoints();    // …or a stale tokens hero
+        clearCachedGivingMine();   // …or the last account's split
+        // …or the last board read for that account: it names them, and its "you" row is theirs.
+        // Drops what is on screen and both cached copies (leaderboardFeature). Not yet defined
+        // during this file's own boot render, when there is nothing to drop.
+        if (window.__hugLeaderboard) window.__hugLeaderboard.forget();
       }
       document.documentElement.dataset.accountStatus = accountStatus;
       try {
@@ -415,6 +987,15 @@
       } catch (error) {
         console.warn("Unable to save account state", error);
       }
+      // …and to the durable shelf the session is on, so an evicted localStorage cannot
+      // leave a signed-in device believing it is a guest. See durableSet above.
+      durableSet(HUG_ACCOUNT_STATE_KEY, accountStatus);
+      if (accountEmail) durableSet(HUG_ACCOUNT_EMAIL_KEY, accountEmail);
+      else durableRemove(HUG_ACCOUNT_EMAIL_KEY);
+      // Prototype permission belongs to one signed-in person. Signed out: forget it. Signed in:
+      // ask the server for THIS email (no-op until the bridge exists; boot asks again after).
+      if (accountStatus !== "active") clearPrototypeAccess();
+      else if (window.__hugRefreshPrototypeAccess) window.__hugRefreshPrototypeAccess();
       renderHugAccountState();
     }
 
@@ -440,7 +1021,7 @@
     function showToast(message) {
       let el = document.getElementById("hug-toast");
       if (!el) { el = document.createElement("div"); el.id = "hug-toast"; el.className = "hug-toast"; document.body.appendChild(el); }
-      el.textContent = message;
+      if (window.hugSetText) window.hugSetText(el, message); else el.textContent = message;
       el.classList.add("show");
       clearTimeout(el._hideTimer);
       el._hideTimer = setTimeout(() => el.classList.remove("show"), 3400);
@@ -467,8 +1048,53 @@
         ov.querySelector(".hug-confirm-ok").addEventListener("click", () => close(true));
         ov.addEventListener("click", e => { if (e.target === ov) close(false); });
         document.body.appendChild(ov);
+      if (window.hugTickify) window.hugTickify(ov);
         requestAnimationFrame(() => ov.classList.add("show"));
       });
+    }
+    // A note at the front of the screen (showConfirm's card, one button): a title, an optional
+    // amount on its own line, and short lines. Amounts never sit inside a sentence, so every line
+    // stays one fixed string the translator can match. Closes on its button, the backdrop or Esc.
+    // Returns close(). On body, outside the phone's tap handlers, so closing never also counts as
+    // a tap on the screen behind.
+    let noteSeq = 0;
+    function showNote(opts) {
+      const o = opts || {};
+      const ov = document.createElement("div");
+      ov.className = "hug-confirm-overlay pending-note";
+      const box = document.createElement("div");
+      box.className = "hug-confirm-card";
+      box.setAttribute("role", "dialog"); box.setAttribute("aria-modal", "true");
+      const titleId = "hug-note-title-" + (++noteSeq);
+      box.setAttribute("aria-labelledby", titleId);
+      const title = document.createElement("p");
+      title.className = "hug-confirm-title"; title.id = titleId; title.textContent = o.title || "";
+      box.appendChild(title);
+      if (o.amount) { const a = document.createElement("p"); a.className = "pending-note-amount"; a.textContent = o.amount; box.appendChild(a); }
+      (o.lines || []).forEach(t => { const p = document.createElement("p"); p.className = "pending-note-line"; p.textContent = t; box.appendChild(p); });
+      const actions = document.createElement("div"); actions.className = "hug-confirm-actions";
+      const ok = document.createElement("button"); ok.type = "button"; ok.className = "hug-confirm-ok"; ok.textContent = o.button || "Got it";
+      actions.appendChild(ok); box.appendChild(actions);
+      ov.appendChild(box);
+      let open = true;
+      const onKey = e => { if (e.key === "Escape") close(); };
+      function close() {
+        if (!open) return;
+        open = false;
+        document.removeEventListener("keydown", onKey);
+        ov.classList.remove("show");
+        setTimeout(() => ov.remove(), 220);
+        if (o.returnFocus) { try { o.returnFocus.focus({ preventScroll: true }); } catch (e) {} }
+        if (o.onClose) o.onClose();
+      }
+      ok.addEventListener("click", close);
+      ov.addEventListener("click", e => { if (e.target === ov) close(); });
+      document.addEventListener("keydown", onKey);
+      document.body.appendChild(ov);
+      if (window.hugTickify) window.hugTickify(ov);
+      requestAnimationFrame(() => { if (open) ov.classList.add("show"); });
+      try { ok.focus({ preventScroll: true }); } catch (e) {}
+      return close;
     }
     // On-brand input pop-out (same card as showConfirm, with a text field).
     // Resolves to the trimmed value on Save, or null on Cancel / backdrop tap.
@@ -532,6 +1158,8 @@
       if (window.__hugImpact) window.__hugImpact.load();
       if (window.__hugLeaderboard) window.__hugLeaderboard.load();
       if (window.__hugPoints) window.__hugPoints.load();
+      if (window.__hugGiving) window.__hugGiving.load();
+      if (window.__hugReferralRates) window.__hugReferralRates.render();
       if (window.__hugUsername) window.__hugUsername.load();
       if (window.__hugAccountHistory) window.__hugAccountHistory.loadLive();
       if (window.__hugAccountControls) window.__hugAccountControls.render();
@@ -720,11 +1348,17 @@
     }
 
     function saveLinkedProducts() {
+      const payload = JSON.stringify(linkedProducts);
       try {
-        localStorage.setItem(HUG_LINKED_PRODUCTS_KEY, JSON.stringify(linkedProducts));
+        localStorage.setItem(HUG_LINKED_PRODUCTS_KEY, payload);
       } catch (error) {
         console.warn("Unable to save linked products", error);
       }
+      // Mirrored, because losing this is not just a slow number: updateReferralGate keys
+      // off linkedProducts.length, so an evicted store shows a signed-in owner the LOCKED
+      // referral QR ("link a product to refer again") and a zeroed impact grid until
+      // listMyUnits answers. Wrong state reads as broken, not as loading.
+      durableSet(HUG_LINKED_PRODUCTS_KEY, payload);
     }
 
     function isProductLinked(productCode) {
@@ -807,6 +1441,7 @@
       } catch (error) {
         console.warn("Unable to clear linked products", error);
       }
+      durableRemove(HUG_LINKED_PRODUCTS_KEY);   // or the next boot restores what this cleared
       renderLinkedProducts();
       closeLinkedReferral();
     }
@@ -814,9 +1449,33 @@
     window.clearHugLinkedProducts = clearHugLinkedProducts;
     linkedProducts = loadLinkedProducts();
     const hadStoredAccountStatus = hasStoredHugAccountStatus();
+    // Nothing stored at all: hold off on claiming £0.00 until the durable mirror has been
+    // read (a few ms). Only meaningful when a mirror could exist — a bridge-less web page
+    // has nowhere else to look, so guest is already the final answer there.
+    bootAccountStateUnknown = !hadStoredAccountStatus;
     accountStatus = loadHugAccountStatus();
     accountEmail = loadHugAccountEmail();
     referralCode = loadReferralCode();
+    // Seed the last-known figures BEFORE the first render, so a signed-in launch paints
+    // the real balance immediately instead of £0.00 and then popping when the server
+    // replies ~a second later. refreshReferralBalanceFromServer() reconciles right after.
+    if (accountStatus === "active") {
+      const cached = loadCachedBalance();
+      if (cached) {
+        referralAvailableCents = cached.availableCents;
+        referralPendingCents = cached.pendingCents;
+        referralCashedOutCents = cached.cashedOutCents;
+        referralRewardCount = cached.count;
+        balanceKnown = true;
+      }
+    } else if (hadStoredAccountStatus) {
+      // An explicit stored "guest": this device really is signed out, so drop the figures.
+      clearCachedBalance();
+    }
+    // NOTHING stored at all falls through deliberately. "First run" and "localStorage was
+    // evicted under a live session" arrive here identically, and they are not the same
+    // answer — clearing here would wipe the durable mirror that tells them apart, which is
+    // exactly what restoreDurableAccountState() below is about to read.
     if (!hadStoredAccountStatus && linkedProducts.length > 0 && accountEmail) {
       // Local prototype migration: existing linked products imply an activated account.
       setHugAccountState("active", accountEmail);
@@ -828,15 +1487,33 @@
       renderHugAccountState();
     }
     renderLinkedProducts();
+    // The launch cover used to lift here, on a fixed 300ms timer, whether or not the page was
+    // ready. It is now lifted by the checklist at the top of this file (bootGate), once every
+    // part of the first screen has drawn its final state. Local state is hydrated at this
+    // point, but the durable restore below is not, and nor is anything from the network.
+
+    // Display faces for the gift-card message composer, off the launch path.
+    //
+    // These used to be a render-blocking <link> in <head>. A stylesheet blocks the first paint
+    // AND the execution of every script after it, so the Google Fonts round trip was holding up
+    // app.js — which is the thing that removes .hug-boot-pending directly above. The launch was
+    // therefore waiting on a third-party request for fonts nobody sees until they open the card
+    // composer. Measured against the built bundle, first paint tracked that request 1:1: 200ms
+    // when it was instant, 1020ms when it took 800ms.
+    //
+    // Loaded here instead, once, on idle. Injected rather than declared because CSP's script-src
+    // has no 'unsafe-inline', so the usual media="print" onload swap is not available.
+    loadCardComposerFonts();
+    installImpactIconMotionGate();
 
     /* Supabase sync: when the backend is enabled, the auth session is the
        authority on guest/active and product_units is the authority on linked
        products. localStorage stays as an offline display cache and as the
        full fallback when the backend is disabled. */
-    async function refreshLinkedProductsFromServer() {
+    async function refreshLinkedProductsFromServer(prefetched) {
       const backend = window.HugBackend;
       if (!backend?.enabled || accountStatus !== "active") return;
-      const res = await backend.listMyUnits();
+      const res = await (prefetched || backend.listMyUnits());
       if (!res.ok) return;
       // One display row per product type, but keep every owned unit's token so
       // an unlink can release each of them server-side.
@@ -863,28 +1540,285 @@
       renderLinkedProducts();
     }
 
+    /* BOOT PREFETCH — why the personal figures used to cost TWO round trips.
+       syncAccountFromBackend awaited getSession() and only THEN asked for the balance,
+       profile and units, so a signed-in user watched an empty (or worse, £0.00) pill for
+       session + balance, one after the other. On a phone that is the "couple of seconds"
+       before your own numbers appear.
+       They do not actually depend on each other: every one of these reads is authorised
+       server-side by the very session getSession is reporting on, so firing them together
+       is exactly as safe and finishes in the time of the slowest one.
+       Started ONLY when local state already says "active" — a device that has never signed
+       in must not fire authenticated reads on spec. Nothing is APPLIED until getSession has
+       confirmed the session below; if it turns out to be dead the promises are dropped
+       unread (and would have answered !ok anyway, since the token is what authorises them). */
+    function startBootPrefetch(backend) {
+      const guard = (p) => Promise.resolve(p).catch(() => ({ ok: false }));
+      return {
+        balance: guard(backend.getReferralBalance()),
+        profile: guard(backend.getMyProfile()),
+        units: guard(backend.listMyUnits()),
+      };
+    }
+
+    /* Recover the display state that localStorage lost, from the durable mirror.
+       Runs ONLY when localStorage held no account status at all — the ambiguous case that
+       is either a genuine first run or an eviction under a live session. The mirror is what
+       distinguishes them, and it costs a local key read rather than the two network round
+       trips (token refresh, then balance) it takes to work the answer out from the server.
+       A device that has truly never signed in finds nothing here and stays a guest.
+       Returns true when it restored, so the caller knows the prefetch below is now worth
+       firing — which is the difference between the figures costing one round trip and two. */
+    /* A HOLD MUST BE ABLE TO END BY ITSELF.
+       Shipped to device, the money pill came up blank and STAYED blank. The hold below is
+       lifted in a finally, which only runs if the await it guards ever settles — and the
+       durable read goes through Capacitor Preferences, over the native bridge, from
+       DOMContentLoaded. That is earlier than this code used to run (it was window.load),
+       and a plugin call made before the bridge is ready can simply never resolve. No
+       rejection, no error: the promise hangs, the finally never runs, and the pill is blank
+       for the life of the launch.
+       That is a worse failure than the false £0.00 the hold exists to prevent — a wrong
+       number for 15ms versus no number at all. So the hold now expires on its own, and the
+       read itself cannot hang forever either. Belt and braces deliberately: the timeout
+       below covers a hung read, and the independent expiry covers anything that stops the
+       finally running at all.
+
+       Kept short on purpose. A warm Preferences read is single-digit milliseconds, so these
+       are pathological-case ceilings, not budgets. They are the point at which a blank stops
+       being "about to be right" and starts being worse than the honest guest £0.00 — the
+       common case on a fresh install is that there IS no mirror to find. */
+    const DURABLE_READ_TIMEOUT_MS = 800;
+    const BOOT_UNKNOWN_MAX_MS = 1000;
+    function withTimeout(promise, ms, fallback) {
+      return Promise.race([
+        Promise.resolve(promise).catch(() => fallback),
+        new Promise((resolve) => setTimeout(() => resolve(fallback), ms)),
+      ]);
+    }
+    function releaseBootHold() {
+      if (!bootAccountStateUnknown) return;
+      bootAccountStateUnknown = false;
+      renderReferralBalance();
+      if (window.__hugPoints) window.__hugPoints.load();
+    }
+    // Independent of the read: whatever happens to that promise, the hold ends.
+    setTimeout(releaseBootHold, BOOT_UNKNOWN_MAX_MS);
+
+    async function restoreDurableAccountState() {
+      try {
+        return await readDurableAccountState();
+      } finally {
+        // However it went, the ambiguity is over — either an account was restored, or there
+        // was nothing to restore and "guest" is now the confirmed answer rather than a
+        // guess. Clear the hold and repaint, so a blank pill resolves to a real £0.00.
+        // (The success path clears it before it renders, so this only repaints the rest.)
+        releaseBootHold();
+      }
+    }
+
+    async function readDurableAccountState() {
+      // The forced-signed-out dev flag wipes localStorage from a window.load handler, which
+      // now fires AFTER this does — without this guard the restore would resurrect the very
+      // account that boot is trying to clear, and only the later signOut would undo it.
+      if (HUG_ALWAYS_SIGNED_OUT_ON_BOOT) return false;
+      if (isDemoMode() || hadStoredAccountStatus || accountStatus === "active") return false;
+      const store = window.HugStore;
+      if (!store) return false;
+      let status, email, rawBalance, rawPoints, rawUnits, rawCode, rawBoard, rawGivingOverview, rawGivingMine, rawImpactPanel;
+      try {
+        // Each read is individually timed out. A Preferences call issued before the native
+        // bridge is ready can hang rather than reject, and one hung key must not strand the
+        // other six — nor the hold that this function is responsible for lifting.
+        const read = (key) => withTimeout(store.get(key), DURABLE_READ_TIMEOUT_MS, null);
+        [status, email, rawBalance, rawPoints, rawUnits, rawCode, rawBoard, rawGivingOverview, rawGivingMine, rawImpactPanel] = await Promise.all([
+          read(HUG_ACCOUNT_STATE_KEY),
+          read(HUG_ACCOUNT_EMAIL_KEY),
+          read(HUG_BALANCE_CACHE_KEY),
+          read(HUG_POINTS_CACHE_KEY),
+          read(HUG_LINKED_PRODUCTS_KEY),
+          read(HUG_REFERRAL_CODE_KEY),
+          read(HUG_LEADERBOARD_CACHE_KEY),
+          read(HUG_GIVING_OVERVIEW_KEY),
+          read(HUG_GIVING_MINE_KEY),
+          read(HUG_IMPACT_PANEL_KEY),
+        ]);
+      } catch (error) { return false; }
+      // The board first, and whatever the account turns out to be: it is keyed inside to whoever
+      // it was read for (a guest, or a signed-in email), so putting it back is safe either way,
+      // and the board's own load() paints it. Parsed before it is written back, like the balance:
+      // a corrupt mirror value must not be copied into localStorage, where it would outlive this boot.
+      if (rawBoard) {
+        try {
+          const b = JSON.parse(rawBoard);
+          if (b && typeof b === "object" && Array.isArray(b.rows)) localStorage.setItem(HUG_LEADERBOARD_CACHE_KEY, rawBoard);
+        } catch (error) { /* not a board */ }
+      }
+      // The giving facts are public, so they come back whoever this turns out to be; parsed first.
+      if (rawGivingOverview) {
+        try {
+          const o = JSON.parse(rawGivingOverview);
+          if (o && typeof o === "object" && Array.isArray(o.causes)) localStorage.setItem(HUG_GIVING_OVERVIEW_KEY, rawGivingOverview);
+        } catch (error) { /* not an overview */ }
+      }
+      const restoredEmail = String(email || "").trim();
+      // The panel the home row last settled on, back on the shelf localStorage lost. Only for the
+      // account it was written for (a guest's carries no email), parsed before it is written back.
+      if (rawImpactPanel) {
+        try {
+          const ip = JSON.parse(rawImpactPanel);
+          const owner = status === "active" ? restoredEmail.toLowerCase() : "";
+          if (ip && (ip.panel === "planet" || ip.panel === "people") && String(ip.who || "").toLowerCase() === owner) {
+            localStorage.setItem(HUG_IMPACT_PANEL_KEY, rawImpactPanel);
+          }
+        } catch (error) { /* not a panel */ }
+      }
+      // Both halves required: an "active" with no confirmed email is the same broken state
+      // the local boot path above already refuses to trust.
+      if (status !== "active" || !isValidEmail(restoredEmail)) return false;
+      // Parse BEFORE writing it back: a corrupt mirror value must not be copied into
+      // localStorage, where it would outlive the boot that read it.
+      if (rawBalance) {
+        let cached = null;
+        try {
+          const c = JSON.parse(rawBalance);
+          if (c && typeof c === "object") {
+            const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+            cached = { availableCents: n(c.a), pendingCents: n(c.p), cashedOutCents: n(c.c), count: n(c.n) };
+          }
+        } catch (error) { cached = null; }
+        if (cached) {
+          try { localStorage.setItem(HUG_BALANCE_CACHE_KEY, rawBalance); } catch (error) {}
+          referralAvailableCents = cached.availableCents;
+          referralPendingCents = cached.pendingCents;
+          referralCashedOutCents = cached.cashedOutCents;
+          referralRewardCount = cached.count;
+          balanceKnown = true;   // seed BEFORE the state change, so it paints in one step
+        }
+      }
+      // Linked products decide the referral gate and the impact grid, so they have to be
+      // back in place BEFORE setHugAccountState renders — restoring them afterwards would
+      // still flash the locked QR. loadLinkedProducts() re-reads and re-validates rather
+      // than trusting the mirrored shape.
+      if (rawUnits) {
+        try { localStorage.setItem(HUG_LINKED_PRODUCTS_KEY, rawUnits); } catch (error) {}
+        const restoredUnits = loadLinkedProducts();
+        if (restoredUnits.length) linkedProducts = restoredUnits;
+        else { try { localStorage.removeItem(HUG_LINKED_PRODUCTS_KEY); } catch (error) {} }
+      }
+      const restoredCode = String(rawCode || "").trim();
+      if (restoredCode) {
+        referralCode = restoredCode;
+        try { localStorage.setItem(HUG_REFERRAL_CODE_KEY, restoredCode); } catch (error) {}
+      }
+      // The eco-points hero reads its cache through localStorage, so put the mirrored
+      // figure back there before the render below goes looking for it.
+      const restoredPoints = Number(rawPoints);
+      if (rawPoints != null && rawPoints !== "" && Number.isFinite(restoredPoints) && restoredPoints >= 0) {
+        try { localStorage.setItem(HUG_POINTS_CACHE_KEY, String(restoredPoints)); } catch (error) {}
+      }
+      // This account's split, for the home row and the impact screen. Only ever the account the
+      // mirror was written for (it carries its email), and parsed before it is written back.
+      if (rawGivingMine) {
+        try {
+          const m = JSON.parse(rawGivingMine);
+          if (m && typeof m === "object" && m.giving && Array.isArray(m.giving.per_cause)
+              && String(m.who || "").toLowerCase() === restoredEmail.toLowerCase()) {
+            localStorage.setItem(HUG_GIVING_MINE_KEY, rawGivingMine);
+          }
+        } catch (error) { /* not a split */ }
+      }
+      // Lift the hold BEFORE the state change, or setHugAccountState's own render would
+      // still see the balance as unknown and paint the blank it is about to fill.
+      bootAccountStateUnknown = false;
+      setHugAccountState("active", restoredEmail);   // rewrites localStorage and re-renders
+      renderLinkedProducts();   // renderHugAccountState does not cover the products list
+      return true;
+    }
+
     async function syncAccountFromBackend() {
       if (isDemoMode()) return;   // demo mode is self-contained display; never sync the backend over it
       const backend = window.HugBackend;
       if (!backend?.enabled) return;
       await hugLoginReset;        // wait out the one-time forced sign-out, or it races and re-signs-in
+      const prefetch = accountStatus === "active" ? startBootPrefetch(backend) : null;
       const res = await backend.getSession();
       if (!res.ok) return;                      // offline: keep local fallback state
       if (res.session) {
         setHugAccountState("active", res.session.email);
-        refreshLinkedProductsFromServer();
+        refreshLinkedProductsFromServer(prefetch?.units);
         if (window.__hugPurchases) window.__hugPurchases.refresh();
-        refreshReferralCodeFromServer();
-        refreshReferralBalanceFromServer();
+        refreshReferralCodeFromServer(prefetch?.profile);
+        refreshReferralBalanceFromServer(prefetch?.balance);
       } else if (accountStatus === "active") {
         // Stale local "active" with no session behind it: claiming would fail
         // as unauthenticated, so drop back to guest until the user verifies.
         setHugAccountState("guest");
       }
     }
-    // native-bridge.js loads after app.js, so HugBackend appears by window load.
-    if (window.HugBackend) syncAccountFromBackend();
-    else window.addEventListener("load", () => syncAccountFromBackend(), { once: true });
+    // Recover from the durable mirror first (a local read), so that by the time the server
+    // is consulted the app already knows whose account this is — which both paints the real
+    // figures immediately and lets syncAccountFromBackend prefetch instead of serialising.
+    async function bootAccountSync() {
+      try { await restoreDurableAccountState(); } catch (error) {}
+      // Whose account this is is now as settled as local knowledge can make it. The other
+      // parts of the first screen tick themselves off as they draw (see bootGate).
+      if (window.__hugBoot) window.__hugBoot.release("boot-account");
+      await syncAccountFromBackend();
+      refreshPrototypeAccess();
+    }
+
+    /* Ask the server whether THIS signed-in person may see the Prototype mode switch, and keep
+       the answer. Runs in both modes: in prototype it is the only thing that can notice the
+       permission was taken away (or the session ended) and drop back to the real account.
+       Offline or failed: keep what we knew — prototype is display-only, so a stale "yes" for
+       one launch shows sample data, never touches real data. A definite "no", or "nobody is
+       signed in", ends it. */
+    let prototypeAccessInFlight = null;
+    function refreshPrototypeAccess() {
+      if (prototypeAccessInFlight) return prototypeAccessInFlight;
+      const backend = window.HugBackend;
+      if (!backend?.enabled || !backend.getAppAccess) return Promise.resolve();
+      prototypeAccessInFlight = Promise.resolve(backend.getAppAccess()).then((res) => {
+        if (!res || !res.ok) return;
+        if (!res.signedIn) clearPrototypeAccess();
+        else savePrototypeAccess(res.email, res.prototype);
+        const stillAllowed = res.signedIn && res.prototype && normEmail(res.email) === PROTOTYPE_EMAIL;
+        if (PROTOTYPE_ON && !stillAllowed) {
+          setPrototypeMode(false);
+          location.reload();
+          return;
+        }
+        if (window.__hugPrototypeSwitch) window.__hugPrototypeSwitch.render();
+      }).catch(() => {}).then(() => { prototypeAccessInFlight = null; });
+      return prototypeAccessInFlight;
+    }
+    window.__hugRefreshPrototypeAccess = refreshPrototypeAccess;
+    /* WAIT FOR THE BRIDGE, DO NOT INFER IT FROM readyState.
+       This previously keyed off `document.readyState === "loading"` to decide whether
+       DOMContentLoaded was still coming. That is wrong for a DEFERRED script, and index.html
+       loads app.js and native-bridge.js with `defer`: a deferred script executes while
+       readyState is already "interactive", with DOMContentLoaded still ahead of it. So the
+       check failed, the else branch ran bootAccountSync() immediately — before
+       native-bridge.js had executed — and with neither HugBackend nor HugStore defined the
+       entire account sync silently no-opped. On device that is a blank money pill, no
+       restore, and no session: every symptom, from one wrong readiness test.
+       Wait for the thing actually needed instead of predicting when it appears. Deferred
+       scripts run in order before DOMContentLoaded, so DCL is the earliest point at which
+       native-bridge.js is guaranteed to have run; load and a timeout are backstops so a
+       bridge that never arrives degrades to local-only rather than hanging boot. */
+    function whenBridgeReady() {
+      return new Promise((resolve) => {
+        if (window.HugBackend) return resolve();
+        let settled = false;
+        const finish = () => { if (settled) return; settled = true; resolve(); };
+        if (document.readyState !== "complete") {
+          document.addEventListener("DOMContentLoaded", finish, { once: true });
+          window.addEventListener("load", finish, { once: true });
+        }
+        setTimeout(finish, 3000);
+      });
+    }
+    whenBridgeReady().then(bootAccountSync);
 
     function shortQrValue(value) {
       const normalized = String(value || "").trim();
@@ -975,24 +1909,45 @@
       return link;
     }
 
-    async function stopProductQrScan({ state = "cancelled", message = "Scan cancelled" } = {}) {
+    // defer: a page switch off the camera (showScreen, quickFadeTo). The native stop then waits
+    // until the bars' icons have eased (chromeEaseFrom, 450 ms). The mlkit plugin's stopScan
+    // drops its camera view on the main thread, and that view's deinit calls
+    // AVCaptureSession.stopRunning() there, synchronously: the screen froze for a moment in the
+    // middle of the ease, so the icons arrived at their end values in one jump (owner,
+    // 2026-10-17, camera -> home and camera -> QR: "the typical on/off mode"). Meanwhile the white
+    // stop-cover (scan-stopping) keeps the still-running camera out of sight, and a code it
+    // reads is ignored (cameraSessionAlive is already false: the hug:qr-scanned listener).
+    var CAMERA_STOP_DEFER_MS = 520;
+    var scanStopCoverToken = 0;
+    async function stopProductQrScan({ state = "cancelled", message = "Scan cancelled", defer = false } = {}) {
       const hadLiveCamera = cameraSessionAlive ||
         document.documentElement.classList.contains("scan-camera-active");
       scanRequestId += 1;
       cameraSessionAlive = false;
       closeAccountActivation();
       setScanCameraVisible(false);
+      const deferred = defer && hadLiveCamera;
       // Only flash the white stop-cover when a camera was actually live;
       // redundant stops (double nav calls, browser) shouldn't blink the UI.
+      const coverToken = ++scanStopCoverToken;
+      const dropCover = function () {
+        if (coverToken === scanStopCoverToken) document.documentElement.classList.remove("scan-stopping");
+      };
       if (hadLiveCamera) {
         document.documentElement.classList.add("scan-stopping");
-        setTimeout(function(){ document.documentElement.classList.remove("scan-stopping"); }, 360);
+        if (!deferred) setTimeout(dropCover, 360);
       }
       try {
-        await queueScanOp(function () { return window.HugNative?.stopQrScan?.(); });
+        await queueScanOp(function () {
+          if (!deferred) return window.HugNative?.stopQrScan?.();
+          return new Promise(function (resolve) { setTimeout(resolve, CAMERA_STOP_DEFER_MS); })
+            .then(function () { return window.HugNative?.stopQrScan?.(); });
+        });
       } catch (error) {
         console.error("Unable to stop QR scanner", error);
       }
+      // Deferred: the cover goes a moment after the camera has really stopped.
+      if (deferred) setTimeout(dropCover, 80);
       if (state && scanScreen?.classList.contains("active")) {
         setScanState(state, message);
       }
@@ -1223,6 +2178,21 @@
       clearScanResult();
       scanResult?.setAttribute("aria-hidden", "false");
       if (parsedCode.isHugCode) {
+        if (IS_PRODUCTION_BUILD) {
+          // Phase 1B: a raw product code (not a /u/<token> QR) never grants
+          // ownership in production. Real mugs carry a high-entropy unit token
+          // resolved + claimed atomically server-side; guide the user there.
+          confirmedHugProductCode = "";
+          confirmedHugProduct = null;
+          scanResult?.classList.add("is-invalid-code");
+          if (scanResultKicker) scanResultKicker.textContent = "Scan your mug's code";
+          if (scanResultTitle) scanResultTitle.textContent = "Scan your mug's QR";
+          if (scanResultMessage) scanResultMessage.textContent = "Point the camera at the QR printed on your Hug mug to link it.";
+          if (scanResultCode) scanResultCode.textContent = "";
+          setScanState("not-hug-code", "Scan your mug's QR");
+          console.log("Rejected non-token product code in production build");
+          return;
+        }
         confirmedHugProductCode = parsedCode.productCode;
         confirmedHugProduct = parsedCode;
         if (isProductLinked(parsedCode.productCode)) {
@@ -1256,6 +2226,8 @@
     window.handleScannedProductCode = handleScannedProductCode;
 
     window.addEventListener("hug:qr-scanned", event => {
+      // Off the scan page (or its camera already stopping), a code read is not ours to handle.
+      if (!cameraSessionAlive || !scanScreen?.classList.contains("active")) return;
       const scanState = scanScreen?.dataset.scanState;
       if (scanState !== "scanning") return;
       const code = String(event.detail?.rawValue || event.detail?.displayValue || event.detail?.code || "").trim();
@@ -1336,6 +2308,20 @@
         }
         // claimed: reconcile the display list from the server in the background.
         refreshLinkedProductsFromServer();
+      } else if (IS_PRODUCTION_BUILD) {
+        // Phase 1B: in production, ownership can ONLY come from a successful
+        // atomic claim_unit on a /u/<token> QR (handled above). A raw/generic/
+        // test product code — or a disabled backend — must NEVER locally link a
+        // product, which would unlock referral rewards without a verified,
+        // server-confirmed purchase. Fail closed.
+        clearScanResult();
+        scanResult?.setAttribute("aria-hidden", "false");
+        scanResult?.classList.add("is-invalid-code");
+        if (scanResultKicker) scanResultKicker.textContent = "Scan your mug's code";
+        if (scanResultTitle) scanResultTitle.textContent = "Couldn't link product";
+        if (scanResultMessage) scanResultMessage.textContent = "Scan the QR printed on your Hug mug to link it.";
+        setScanState("not-hug-code", "Couldn't link product");
+        return;
       } else if (isProductLinked(confirmedHugProductCode)) {
         handleScannedProductCode(confirmedHugProductCode);
         return;
@@ -1802,11 +2788,89 @@
 
     hydrateCombinedSvgIcons();
 
+    // ---- Page switches: the bars' icons ease, they never snap ----
+    // Every page has its own copy of the top bar (balance, bag) and the nav (settings, QR, scan),
+    // each icon at that page's brightness (quiet pages dim them to .26, settings to .22). A switch
+    // swapped one copy for the other, so each icon jumped to its new brightness in one frame
+    // (measured in Chrome: home, QR, scan and settings, every direction). Owner, 2026-10-17: "more
+    // of an s curve fade in/out and not an immediate on and off ... within 0.5 secs for all across
+    // the board". Now the page coming in starts each icon at what was on screen a moment ago and
+    // eases it to its own value: 450 ms, an S curve. A Web Animation over the stylesheet, so no
+    // rule changes and nothing is left behind; a rule with !important still wins while it holds.
+    // The bag, balance and checkout pages keep their own choreography: they slide in over home
+    // and already fade their bars with it.
+    // Function declarations (not consts): showScreen is hoisted and may run before this point.
+    function chromeParts(screen) {
+      if (!screen) return null;
+      return [".top .balance", ".top .bag-button",
+        '.bottom-nav [data-go="settings"]', '.bottom-nav [data-go="qr"]', '.bottom-nav [data-go="scan"]']
+        .map(sel => ({ el: screen.querySelector(sel), icon: screen.querySelector(sel + " .nav-icon") }));
+    }
+    // settled: the value each part is heading for. A class change can have just started a CSS
+    // transition, and computed style then gives its first frame; with transitions off for the
+    // read it gives the end value (no transition starts afterwards: the value read is final).
+    function chromeLook(parts, settled) {
+      const els = settled ? parts.flatMap(p => [p.el, p.icon]).filter(Boolean) : [];
+      const was = els.map(el => el.style.transition);
+      els.forEach(el => { el.style.transition = "none"; });
+      const look = parts.map(p => ({
+        op: p.el ? parseFloat(getComputedStyle(p.el).opacity) : null,
+        filter: p.icon ? getComputedStyle(p.icon).filter : null
+      }));
+      els.forEach((el, i) => { el.style.transition = was[i]; });
+      return look;
+    }
+    // What the bars show right now: call BEFORE any class changes for a switch. screenName: a
+    // page other than the current one (the bag, still drawn over home as it closes).
+    function chromeCapture(screenName) {
+      const name = screenName || phone.dataset.current || "home";
+      const screen = screens.find(s => s.dataset.screen === name);
+      const parts = chromeParts(screen);
+      return parts ? { name, look: chromeLook(parts) } : null;
+    }
+    // After the switch: ease the new page's icons from what was captured. True when it applies.
+    // The bag and balance pages sliding in over home or away from it keep their own fades (those
+    // run on phone classes, below, and mostly not through showScreen at all).
+    // opts.force: a caller that has taken the freeze rules off its own switch (bag <-> balance,
+    // settings -> balance). opts.topOnly: the end of a bag close, when home takes over from the bag
+    // drawn above it; only the top bar was the bag's (the nav underneath was home's all along).
+    // opts.navOnly: the end of a bag close to any other page, where it is the other way round.
+    function chromeEaseFrom(from, opts = {}) {
+      if (!from) return false;
+      const name = phone.dataset.current || "home";
+      if (name === from.name) return false;            // same page (a quick fade landing): its ease runs on
+      if (!opts.force) {
+        if (/\b(bag-entering|account-entering|bag-closing|account-closing|bag-account-switch|settings-account-switch|bag-scan-switch|bag-target-[\w-]+|bag-to-[\w-]+-switch|bag-from-[\w-]+-switch)\b/.test(phone.className)) return false;
+      }
+      if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return false;
+      let parts = chromeParts(screens.find(s => s.dataset.screen === name));
+      if (!parts || typeof Element.prototype.animate !== "function") return false;
+      // An ease still running (a quick second switch) belongs to a page now leaving: drop it.
+      screens.forEach(s => (chromeParts(s) || []).forEach(p => [p.el, p.icon].forEach(el => {
+        if (el && el.getAnimations) el.getAnimations().forEach(a => { if (a.id === "chrome-ease") a.cancel(); });
+      })));
+      const to = chromeLook(parts, true);
+      const timing = { duration: 450, easing: "cubic-bezier(.45, 0, .55, 1)" };
+      parts.forEach((p, i) => {
+        if (opts.topOnly && i > 1) return;              // the nav: home's already
+        if (opts.navOnly && i < 2) return;              // the top bar: the page's own already
+        const a = from.look[i], b = to[i];
+        if (p.el && a.op != null && b.op != null && Math.abs(a.op - b.op) > 0.02) {
+          p.el.animate([{ opacity: a.op }, { opacity: b.op }], timing).id = "chrome-ease";
+        }
+        if (p.icon && a.filter != null && b.filter != null && a.filter !== b.filter) {
+          p.icon.animate([{ filter: a.filter }, { filter: b.filter }], timing).id = "chrome-ease";
+        }
+      });
+      return true;
+    }
+
     function showScreen(name, options = {}) {
       if (window.HugDiag) window.HugDiag.log("screen", { name });
+      const chromeFrom = chromeCapture();
       const scanWasActive = scanScreen?.classList.contains("active");
       if (scanWasActive && name !== "scan") {
-        stopProductQrScan({ state: null });
+        stopProductQrScan({ state: null, defer: true });
       }
       if (name !== "linked") {
         closeLinkedReferral();
@@ -1818,6 +2882,7 @@
       }
       phone.classList.remove("quick-fade-mode");
       phone.classList.remove("hide-enter-chrome");
+      phone.classList.remove("chrome-shared");
       phone.style.removeProperty("--quick-fade-ms");
       screens.forEach(screen => {
         screen.classList.remove("quick-fade-enter", "quick-fade-leave");
@@ -1842,6 +2907,11 @@
       // Belt-and-suspenders: the transparent-WebView class must never linger on a
       // non-scan screen, or the whole app greys out (native backdrop shows through).
       if (name !== "scan") document.documentElement.classList.remove("scan-camera-active");
+      // A swipe's camera veil ends with it, a moment after the screen changes, so the scan
+      // shutter can see it was a veiled leave and stay away (scanShutter, below).
+      if (document.documentElement.classList.contains("scan-cam-veil")) {
+        setTimeout(function () { document.documentElement.classList.remove("scan-cam-veil"); }, 450);
+      }
       if (name === "account") {
         document.querySelectorAll(".history-list").forEach(list => {
           list.scrollTop = 0;
@@ -1861,6 +2931,7 @@
           if (scanScreen && scanScreen.classList.contains("active")) startProductQrScan();
         }));
       }
+      chromeEaseFrom(chromeFrom);
     }
 
     function shouldQuickFadeTransition(current, target, trigger = "tap") {
@@ -1889,8 +2960,9 @@
         quickFadeTimer = null;
       }
       if (currentName === "scan") {
-        stopProductQrScan({ state: null });
+        stopProductQrScan({ state: null, defer: true });
       }
+      const chromeFrom = chromeCapture();
       phone.classList.add("quick-fade-mode");
       if (keepEnterChromeVisible) {
         phone.classList.remove("hide-enter-chrome");
@@ -1905,6 +2977,13 @@
       next.classList.add("active", "quick-fade-enter");
       current.classList.add("quick-fade-leave");
       phone.dataset.current = name;
+      // Bars shared through the fade (styles.css .chrome-shared): the incoming page's bars are
+      // drawn at once with their icons easing from the old values, and only the page between
+      // them cross-fades. No hide-enter-chrome then: the leaving bars are gone, nothing overlaps.
+      if (chromeEaseFrom(chromeFrom)) {
+        phone.classList.add("chrome-shared");
+        phone.classList.remove("hide-enter-chrome");
+      }
       quickFadeTimer = setTimeout(() => {
         quickFadeTimer = null;
         showScreen(name);
@@ -1944,13 +3023,16 @@
       });
       if (checkoutTotalValue) {
         const mugSubtotal = total * unitPrice;
-        const discount = (referralApplied && total > 0) ? mugSubtotal * REFERRAL_DISCOUNT_RATE : 0;
+        const discount = (referralApplied && total > 0) ? mugSubtotal * referralFriendRate : 0;
         const grand = mugSubtotal - discount + (total > 0 ? giftWrapFee() + giftCardFee() : 0);
         checkoutTotalValue.textContent = `£${grand.toFixed(2)}`;
         if (checkoutDiscountRow) {
           checkoutDiscountRow.hidden = discount <= 0;
+          const lbl = document.getElementById("checkout-discount-label");
+          if (lbl) lbl.textContent = hugTpl("referral discount ({pct} off)", { pct: Math.round(referralFriendRate * 100) + "%" });
           if (checkoutDiscountValue) checkoutDiscountValue.textContent = `−£${discount.toFixed(2)}`;
         }
+        if (window.__hugShopCredit) window.__hugShopCredit.render(grand);
       }
       renderCheckoutItems();
       prefillCheckoutAddress();
@@ -2327,6 +3409,9 @@
               return;
             }
             const homeNow = phone.dataset.current || "home";
+            // The bag held its icon at full strength over home; home's own is a touch lighter and
+            // took over in one frame. Ease that hand-over like every other switch.
+            const chromeFrom = homeNow === "home" ? chromeCapture("bag") : null;
             phone.classList.remove("bag-closing");
             phone.classList.remove("bag-home-reveal");
             bagCloseTimer = null;
@@ -2337,6 +3422,7 @@
               bagScreen.style.setProperty("--pull-y", "0px");
               bagScreen.style.setProperty("--pull-x", "0px");
               homeScreen.classList.add("active");
+              chromeEaseFrom(chromeFrom, { force: true, topOnly: true });
             }
           }, BAG_EXIT_MS + 36);
           return;
@@ -2389,6 +3475,10 @@
           });
         });
         bagCloseTimer = setTimeout(() => {
+          // The bag's nav stayed on top through this close; the page under it may dim its icons
+          // a touch more (settings: .22, not .26). Ease that hand-over (nav only: the bag's top
+          // bar has already faded away to show the page's own).
+          const chromeFrom = chromeCapture("bag");
           phone.classList.remove("bag-closing");
           phone.classList.remove("bag-home-reveal");
           phone.classList.remove("bag-nonhome-reveal");
@@ -2401,6 +3491,7 @@
           bagScreen.style.setProperty("--pull-x", "0px");
           nextScreen.classList.add("active");
           phone.dataset.current = next;
+          chromeEaseFrom(chromeFrom, { force: true, navOnly: true });
           // Bag→scan uses this manual transition (NOT showScreen), so the native
           // camera was never started — kick it off now that the scan screen is the
           // sole active screen (deferred a frame so it lays out first).
@@ -2424,8 +3515,11 @@
         cancelBagClosing();
         stabilizeBagAccountSwitch(320);
         stabilizeNavSwitch(280);
-        stabilizeTargetUiFromBag("account");
+        // No stabilizeTargetUiFromBag("account") any more: it pinned the balance page's top icons
+        // at their final values with !important for 280 ms, which beats the ease (a snap).
+        const chromeFrom = chromeCapture();
         showScreen("account");
+        chromeEaseFrom(chromeFrom, { force: true });
         return;
       }
       if (current === "bag" && target !== "checkout") {
@@ -2518,8 +3612,12 @@
         return;
       }
       if (trigger === "tap" && current === "settings" && target === "account") {
-        stabilizeSettingsAccountSwitch(320);
+        // No stabilizeSettingsAccountSwitch(320) any more: it pinned both top bars at the balance
+        // page's values with !important, which beats the ease (a snap). The ease reads its end
+        // values with transitions off, so no CSS transition starts under it either.
+        const chromeFrom = chromeCapture();
         showScreen("account");
+        chromeEaseFrom(chromeFrom, { force: true });
         return;
       }
       const navTarget = target === "settings" || target === "qr" || target === "scan";
@@ -2532,6 +3630,10 @@
       if (trigger === "tap" && current === "account" && target === "bag") {
         stabilizeBagAccountSwitch(320);
         stabilizeNavSwitch(280);
+        const chromeFrom = chromeCapture();
+        showScreen("bag");
+        chromeEaseFrom(chromeFrom, { force: true });
+        return;
       }
       if (trigger === "tap" && (current === "scan" || current === "qr") && target === "bag") {
         stabilizeBagScanSwitch(BAG_MOTION_MS + 90, "from-scan");
@@ -2560,6 +3662,7 @@
       const pullTarget = pullScreen || active;
       phone.classList.remove("is-pulling");
       phone.classList.remove("is-pulling-x");
+      document.documentElement.classList.remove("scan-cam-veil");   // a swipe off the camera sprang back: show it again
       const clearY = () => {
         if (pullTarget) {
           pullTarget.style.setProperty("--pull-y", "0px");
@@ -2622,6 +3725,13 @@
       const screen = activeScreen();
       if (!screen || !screen.classList.contains("rubber-ready")) return;
       phone.classList.add("is-pulling-x");
+      // A swipe off the scan screen veils the live camera at once (styles.css .scan-cam-veil). The
+      // camera is a native layer behind the page: it cannot slide with its screen, so it stayed
+      // put, live, behind the screen coming in, until the swipe had finished (owner, 2026-10-16:
+      // "the camera is staying around too long and it looks shit"). A swipe that springs back
+      // lifts the veil again (releaseHorizontalPeek).
+      // From 16 px, so a nudge while aiming the camera does not blink it.
+      if (current === "scan" && Math.abs(dx) >= 16) document.documentElement.classList.add("scan-cam-veil");
       const width = phone.clientWidth || 393;
       if (!dragDirection && Math.abs(dx) > 6) {
         dragDirection = dx < 0 ? -1 : 1;
@@ -2651,6 +3761,7 @@
     function releaseHorizontalPeek() {
       const active = activeScreen();
       phone.classList.remove("is-pulling-x");
+      document.documentElement.classList.remove("scan-cam-veil");
       if (active) {
         active.style.setProperty("--content-x", "0px");
         active.style.setProperty("--screen-x", "0px");
@@ -2712,7 +3823,7 @@
     /* Shopify checkout hand-off: build a Storefront cart from the bag and open
        Shopify's hosted checkout (where Apple/Google Pay live). The referral_code
        (a referrer's code, if captured) rides as a cart attribute so the friend's
-       10% + the referrer reward fire — same as the web flow. Needs HugShop
+       discount + the referrer reward fire — same as the web flow. Needs HugShop
        configured (Storefront token set). */
     const SHOPIFY_VARIANT_GIDS = [
       "gid://shopify/ProductVariant/53993082585427", // dark roast
@@ -2783,7 +3894,7 @@
       const own = String(referralCode || "").toUpperCase();
       return code && code !== own ? code : null;
     }
-    // "apply" the referral code: validate it, then preview the 10% off in the
+    // "apply" the referral code: validate it, then preview the friend's % off in the
     // total. (The code rides to Shopify at checkout regardless via the cart
     // attribute; this just gives in-app feedback that it took.) Returns a status.
     function applyReferralCode() {
@@ -2795,7 +3906,15 @@
       updateCart();
       return "applied";
     }
+    // A minted code reported its real percent: the preview follows it (clamped to a sane range).
+    window.addEventListener("hug:referral-rate", function (e) {
+      const pct = Number(e && e.detail && e.detail.percent);
+      if (!(pct > 0 && pct <= 50)) return;
+      referralFriendRate = pct / 100;
+      updateCart();
+    });
     function resetReferralApplied() {
+      referralFriendRate = REFERRAL_DISCOUNT_RATE_DEFAULT;
       if (!referralApplied) return;
       referralApplied = false;
       updateCart();
@@ -2853,13 +3972,32 @@
     async function startShopifyCheckout(trigger) {
       const lines = buildShopifyLines();
       if (!lines.length) { showToast("Your bag is empty."); return; }
+      // Prototype mode: no order and no money. Say so on a note rather than a failure toast
+      // (the blocked buy() used to read "Couldn't start checkout").
+      if (isDemoMode()) {
+        const usesBalance = !!(window.__hugShopCredit && document.getElementById("checkout-credit") && !document.getElementById("checkout-credit").hidden);
+        showNote({ title: "Sample checkout", returnFocus: trigger,
+          lines: ["This is the sample app, so no order was placed and no money moved.",
+                  usesBalance ? "In the real app, your balance comes off the total and you pay the rest."
+                              : "In the real app, this opens the secure checkout."] });
+        return;
+      }
       const shop = window.HugShop;
       if (!shop || !shop.configured) { showToast("Checkout isn't available yet."); return; }
       if (window.HugDiag) window.HugDiag.log("checkout:open", { lines: lines.length });
       const label = trigger ? trigger.textContent : "";
       if (trigger) { trigger.disabled = true; trigger.textContent = "opening…"; }
       try {
-        const res = await shop.buy({ lines, referralCode: getCheckoutReferralCode(), address: getCheckoutAddress() });
+        // Shop credit: turn the balance into gift card(s) just before paying, and pay with them.
+        // If that fails, ask once rather than silently charging the full price (or blocking).
+        let giftCardCodes = [];
+        const credit = window.__hugShopCredit;
+        if (credit && credit.wantsToSpend()) {
+          const prep = await credit.prepare();
+          if (prep.ok) giftCardCodes = prep.codes;
+          else if (!(await showConfirm({ title: 'Your balance', body: "We couldn't add your balance. Pay without it?", confirm: 'Pay without it', cancel: 'Cancel' }))) return;
+        }
+        const res = await shop.buy({ lines, referralCode: getCheckoutReferralCode(), address: getCheckoutAddress(), giftCardCodes });
         if (!res || !res.ok) {
           const status = (res && res.status) || "failed";
           if (window.HugDiag) window.HugDiag.log("checkout:ui-fail", { status });
@@ -3476,6 +4614,8 @@
       // The deposited card is its own cash-out control — let its click through
       // instead of treating the tap as a navigate-away gesture.
       if (target?.closest?.(".history-wrap, .txn-detail, .simple-row.wide.approved")) return;
+      // So is the pending card: it opens its note (pendingNote).
+      if (target?.closest?.(".simple-row.wide.pending")) return;
       const inAccountContent = target?.closest?.(".screen[data-screen='account'].active .content");
       if (!inAccountContent) return;
       event.stopPropagation?.();
@@ -3498,6 +4638,8 @@
       if (current === "bag" && target?.closest?.(".product-carousel")) return false;
       if (target && target.closest?.("button, a, input, textarea, select, label")) return false;
       if (current === "home" && target?.closest?.(".leader-wrap, .leader-list, .leader-row")) return false;
+      // The impact row is a carousel of its own: a drag there moves the row, never the page.
+      if (current === "home" && target?.closest?.("[data-impact-row]")) return false;
       // Treat the swipe area as the whole phone viewport (not only content),
       // so horizontal carousel gestures can begin nearly anywhere.
       const rect = phone.getBoundingClientRect();
@@ -3636,7 +4778,32 @@
       return Math.max(min, Math.min(max, value));
     }
 
-    function syncResponsiveScrollWindows() {
+    // Memoised on the layout state it actually depends on.
+    //
+    // This measures where the nav sits and sizes the scroll windows to fit above it. Both are
+    // functions of the VIEWPORT and of whether the leader/history panel is open — nothing else.
+    // But syncHistoryFade() and syncLeaderFade() each call it first, and both are bound to the
+    // lists' `scroll` events, so it ran on every scroll frame: two getComputedStyle() calls
+    // followed by read-read-write-write over layout geometry, twice over. That is a forced
+    // synchronous layout per scroll event, for an answer that had not changed.
+    //
+    // The signature is the same trick syncScrollWindowsOnViewportChange already uses a few
+    // hundred lines below; this just applies it at the source instead of at one call site, so
+    // every caller becomes cheap rather than each one having to remember. The open-state flags
+    // are in the signature because the body below branches on them, so a panel opening or
+    // closing must still re-fit. querySelector does not force layout, so building the signature
+    // costs nothing measurable.
+    let scrollWindowFitSignature = "";
+    function syncResponsiveScrollWindows(force) {
+      const signature = [
+        window.innerWidth,
+        window.innerHeight,
+        screen.orientation?.type || window.orientation || "",
+        document.querySelector('.screen[data-screen="home"] .home-content.leader-open') ? 1 : 0,
+        document.querySelector('.screen[data-screen="account"] .account-content.history-open') ? 1 : 0
+      ].join(":");
+      if (!force && signature === scrollWindowFitSignature) return;
+      scrollWindowFitSignature = signature;
       const bottomFeather = parseFloat(getComputedStyle(phone).getPropertyValue("--bottom-feather-h")) || 30;
       const scrollGap = parseFloat(getComputedStyle(phone).getPropertyValue("--scroll-window-gap")) || 10;
       const layoutTopWithin = (element, ancestor) => {
@@ -3665,10 +4832,12 @@
         wrap.style.setProperty(padVar, `${padValue}px`);
       };
 
-      // Tablets (>=600px wide) have a much taller column than a phone, so let the
-      // leaderboard grow to fill it instead of capping at the phone height (340).
-      // Phones are <=440px wide and keep the original 340 cap untouched.
-      const leaderMaxHeight = window.innerWidth >= 600 ? 900 : 340;
+      // Let the leaderboard / history window grow to fill the space above the nav on
+      // every device, so tall phones land flush like the shorter ones instead of
+      // leaving a dead gap at the bottom. (Was capped at 340 on phones, which left a
+      // ~78px empty band on tall devices — iPhone 12/13 mini, 14 Plus/13 Pro Max,
+      // 15 Pro Max/16 Plus, 16 Pro Max, Galaxy Z Flip/Fold, Pixel 7/8.)
+      const leaderMaxHeight = 900;
       if (!document.querySelector('.screen[data-screen="home"] .home-content.leader-open')) {
       fitWindowAboveNav("home", ".leader-wrap", "--leader-window-height", "--leader-list-bottom-pad", leaderMaxHeight, 132, {
         bottomClearance: Math.max(6, Math.ceil(bottomFeather * .22 + 2)),
@@ -4628,6 +5797,7 @@
           account: "account",
           bag: "home",
           checkout: "bag",
+          giving: "settings",
           impact: "settings",
           linked: "settings",
           profile: "settings",
@@ -4686,6 +5856,16 @@
      referral balance (pending + deposited), pulses, then counts down to settle
      on the deposited (spendable) amount. Values come from the live server
      balance (window.__hugReferral); with no referrals yet it reads £0. */
+  // Tell CSS how long each money pill's figure is, whoever set it (renderReferralBalance, the
+  // intro countdown below): a long figure needs a smaller font to clear the logo. See .balance.
+  (function balanceFit() {
+    const tag = (el) => { const n = (el.textContent || "").trim().length; if (String(n) !== el.dataset.len) el.dataset.len = String(n); };
+    document.querySelectorAll(".balance").forEach((el) => {
+      tag(el);
+      new MutationObserver(() => tag(el)).observe(el, { childList: true, characterData: true, subtree: true });
+    });
+  })();
+
   (function balanceIntro() {
     const homeBalance = document.querySelector('[data-screen="home"] .balance');
     if (!homeBalance) return;
@@ -4701,27 +5881,135 @@
     // Pulse on the cumulative (pending-inclusive) amount so the pending shows;
     // keep it current while the server balance is still arriving and re-assert
     // it over renderReferralBalance(), which paints the spendable figure.
-    homeBalance.textContent = "\u00A3" + cumulative().toFixed(2);
-    homeBalance.classList.add("balance-intro-pulse");
-    const sync = setInterval(function () {
+    // While the balance is still UNKNOWN (signed in, no cache, server not yet in) leave
+    // the pill blank rather than asserting \u00A30.00 \u2014 renderReferralBalance owns that state.
+    const known = function () { return !window.__hugReferral || window.__hugReferral.known !== false; };
+    const paintCumulative = function () {
+      if (!known()) return;
       homeBalance.textContent = "\u00A3" + cumulative().toFixed(2);
-    }, 120);
+    };
+    paintCumulative();
+    const sync = setInterval(paintCumulative, 120);
+    // ONE figure on the pill while the intro owns it. renderReferralBalance() repaints every
+    // .balance with the spendable figure whenever anything refreshes; the 120 ms re-assert
+    // above then put the cumulative back, so the pill flashed spendable -> cumulative in the
+    // first frames after the reveal (seen in prototype mode: £105.00, then £175.50). A
+    // MutationObserver runs before the next paint, so the foreign figure is never drawn.
+    // `counting` holds the countdown's current text once it starts; until then it is null and
+    // the cumulative figure is re-derived from the same __hugReferral the other painter used.
+    let counting = null, introDone = false;
+    const hold = new MutationObserver(function () {
+      if (introDone || !known()) return;
+      const want = counting !== null ? counting : "\u00A3" + cumulative().toFixed(2);
+      if (homeBalance.textContent !== want) homeBalance.textContent = want;
+    });
+    hold.observe(homeBalance, { childList: true, characterData: true, subtree: true });
+    // The pulse and countdown are deliberate motion, so they start on the page the user can
+    // actually see — once the launch cover has lifted (bootGate). Started at script time they
+    // ran under the cover and were already half over, mid-fade, when the page appeared, which
+    // read as the pill still loading.
+    const whenShown = (window.__hugBoot && window.__hugBoot.onReveal) || function (cb) { cb(); };
+    whenShown(function () {
+    homeBalance.classList.add("balance-intro-pulse");
     setTimeout(function () {
       clearInterval(sync);
       homeBalance.classList.remove("balance-intro-pulse");
+      // Balance never arrived (offline first launch): leave the pill to
+      // renderReferralBalance rather than counting down to a fabricated £0.00.
+      if (!known()) { introDone = true; hold.disconnect(); return; }
       const FROM = cumulative(), TO = deposited();          // count cumulative -> spendable
       let start = null;
       function tick(ts) {
         if (start === null) start = ts;
         const t = Math.min(1, (ts - start) / COUNT_MS);
         const eased = 1 - Math.pow(1 - t, 3);
-        homeBalance.textContent = "\u00A3" + (FROM + (TO - FROM) * eased).toFixed(2);
+        counting = "\u00A3" + (t < 1 ? FROM + (TO - FROM) * eased : TO).toFixed(2);
+        homeBalance.textContent = counting;
         if (t < 1) requestAnimationFrame(tick);
-        else homeBalance.textContent = "\u00A3" + TO.toFixed(2);
+        else { introDone = true; hold.disconnect(); }
       }
       requestAnimationFrame(tick);
     }, PULSE_END_MS);
+    });
   })();
+
+  /* The + expand's slide, shared by the home leaderboard and the account History. Each has a
+     RAIL that slides (transform) and, inside it, a window whose height does NOT animate (see
+     setExpand in each, and styles.css "The + expand is ONE motion"). Measured on the iPhone 16e
+     simulator, 2026-10-16, by tracking the board in every frame of a recording:
+       · all of the tap's work (rows, classes, the window's size) is done BEFORE the slide starts,
+         and the slide starts alone once the page is calm (later); a newer tap cancels a start
+         still waiting. The rail's resting transform has its own class (*-slid), set with it;
+       · the slide is a Web Animation with the CSS curve and duration plus a short HOLD at its end
+         position (run). iOS stopped the slide ~140 ms before its curve was done, every time, so
+         the last ~0.6 pt arrived in one jump; with the hold the movement is over by then. The CSS
+         transition stays as the fallback (waClass switches it off where this runs).
+     y(): where the rail is NOW (mid-slide on a quick second tap). Read it before the class changes. */
+  function listSlide(rail, content, waClass){
+    var EASE = 'cubic-bezier(.2, .9, .16, 1)';   // = the rails' transition in styles.css
+    var HOLD_MS = 250;
+    // The slide also waits 40 ms at its start position. iOS can be a few frames
+    // late to show a slide's first frame after a busy tap; the wait absorbs that, where otherwise
+    // the first part of the curve would be skipped and the board would jump.
+    var DELAY_MS = 40;
+    var anim = null, seq = 0;
+    var wa = !!(rail && rail.animate && window.DOMMatrix);
+    if(wa) content.classList.add(waClass);
+    function ms(){
+      var v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--hist-expand-ms'));
+      return v > 0 ? v : 650;
+    }
+    return {
+      next: function(){ return ++seq; },
+      // start: once the page is calm after the tap (two on-time frames in a row; at most 160 ms):
+      // the slide starts, and nothing else changes in that frame. Every class change (rows, fades,
+      // the search pill) happens AT the tap. Those restyle every row, ~50 ms a frame on the
+      // simulator, and iOS then needs a while to draw the result; a slide started under that
+      // never showed its first ~100-200 ms, so the board appeared 120-220 pt along.
+      later: function(s, start){
+        var t0 = 0, last = 0, calm = 0;
+        function tick(ts){
+          if(s !== seq) return;
+          if(!t0) t0 = ts;
+          calm = last && ts - last <= 20 ? calm + 1 : 0;
+          last = ts;
+          if(calm >= 2 || ts - t0 >= 160){ start(); return; }
+          requestAnimationFrame(tick);
+        }
+        requestAnimationFrame(tick);
+      },
+      y: function(){
+        try { var m = getComputedStyle(rail).transform; return m && m !== 'none' ? new DOMMatrix(m).m42 : 0; } catch(e){ return 0; }
+      },
+      // Slides the rail from `from` to `to` (px) and leaves it resting there: the resting transform
+      // goes on the RAIL's own inline style (rest: what to leave, '' = the stylesheet's), never via
+      // a class or custom property on the page above it, which restyled every row in the slide's
+      // first frame (~45 ms on the simulator). Returns false where there are no Web Animations;
+      // the caller then switches its *-slid class and the CSS transition runs instead.
+      run: function(from, to, rest){
+        if(!wa) return false;
+        if(anim){ try{ anim.cancel(); }catch(e){} anim = null; }
+        rail.style.transform = rest === undefined ? 'translateY(' + to + 'px)' : rest;
+        if(Math.abs(to - from) < 0.5) return true;
+        // The wait and the hold are keyframes of the one animation, not its `delay`: a delay's end
+        // is a phase change that cost a ~45 ms frame just as the board started to move.
+        var d = ms(), T = DELAY_MS + d + HOLD_MS;
+        anim = rail.animate([
+          { offset: 0, transform: 'translateY(' + from + 'px)' },
+          { offset: DELAY_MS / T, transform: 'translateY(' + from + 'px)', easing: EASE },
+          { offset: (DELAY_MS + d) / T, transform: 'translateY(' + to + 'px)' },
+          { offset: 1, transform: 'translateY(' + to + 'px)' }
+        ], { duration: T });
+        return true;
+      },
+      // When a close may drop its held window height: as the slide's curve ends, INSIDE its hold.
+      // The rail is at rest by then, and the slide still owns its position. Dropped after the
+      // slide, iOS drew History's board 1 pt higher for 3 frames (its resting place with the tall
+      // window), until the shorter window reached the screen (simulator, 2026-10-16). Without
+      // Web Animations: just after the CSS transition.
+      releaseAt: function(){ return wa ? DELAY_MS + ms() : ms() + 50; }
+    };
+  }
 
   /* History: selectable rows -> detail, and the + expand-to-full transaction list. */
   (function historyFeature(){
@@ -4737,7 +6025,23 @@
     if(!content || !wrap || !list || !titleEl) return;
 
     var GBP = function(n){ return '\u00A3' + n.toFixed(2); };
+    var UNKNOWN = HUG_UNKNOWN;   // the "we cannot honestly state this" placeholder
     var MON = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+    // Localised short month name for the current app language. English keeps the app's
+    // custom lowercase style ("jun"); every other language uses the browser's ICU short
+    // month (Arabic "يونيو", Japanese "6月", Hebrew "יוני" …) so dates read in-language
+    // instead of a mix of English + translated. Day/year stay Western digits for parity
+    // with prices; a locale that trails a period (de "Jun.") is trimmed. Falls back to the
+    // English abbreviation if Intl lacks the locale. Language switch reloads, so this is
+    // evaluated fresh per render — no stale month on the observer's re-pass.
+    var monName = function(dt){
+      var lg = (window.hugCurrentLang && window.hugCurrentLang()) || 'en';
+      if (lg === 'en') return MON[dt.getMonth()];
+      try {
+        var nm = dt.toLocaleDateString(lg, { month: 'short' });
+        return (nm && nm.replace(/\.$/, '')) || MON[dt.getMonth()];
+      } catch (e) { return MON[dt.getMonth()]; }
+    };
     var CATALOG = [
       {n:'hug o \u2014 dark roast', p:30}, {n:'hug o \u2014 cherry pop', p:30},
       {n:'hug o \u2014 blue crush', p:30}, {n:'hug o \u2014 lemon drop', p:30}
@@ -4752,10 +6056,13 @@
       'hank','imo','jett','kira','lottie','moss','nell','ori','pia','remy','sol','tova'];
 
     var txns = [], tid = 80432;
+    // true once a referral-history read has FAILED. Distinct from "txns is empty",
+    // which is a real, knowable answer. See render()/loadLive().
+    var histError = false;
     function pushTxn(name, date, amt, st){
       var k = txns.length;
-      // cashback is 10% of the order; each hug o is £30 -> £3 cashback per mug.
-      var nItems = Math.max(1, Math.round(amt / 3)), items = [], sub = 0;
+      // cashback is 5% of the order (the base rate); each hug o is £30 -> £1.50 cashback per mug.
+      var nItems = Math.max(1, Math.round(amt / 1.5)), items = [], sub = 0;
       for(var ii=0; ii<nItems; ii++){
         var it = CATALOG[(k+ii) % 4];          // CATALOG[0..3] are the £30 mug variants
         items.push({name:it.n, qty:1, price:it.p}); sub += it.p;
@@ -4765,30 +6072,40 @@
         time:(hh<10?'0'+hh:hh)+':'+(mm<10?'0'+mm:mm), items:items, subtotal:sub,
         pay:PAY[k % PAY.length], channel:CHAN[k % CHAN.length] });
     }
-    var YEAR = 2026;
-    // Prototype-only sample referral history. Fresh mode = empty history.
+    var YEAR = new Date().getFullYear();
+    // Prototype-only sample referral history. Real accounts never see this (loadLive owns them).
+    // DEMO_REFERRAL_ORDERS orders from referred friends, newest first, dated back from TODAY so
+    // the picture is always current: the last month is still pending (the real return window),
+    // one to three months back is deposited, and everything older has been cashed out. Order
+    // sizes follow a plausible mix — most friends buy one mug, some buy for the household — at
+    // £1.50 cashback per £30 mug (5%).
     if (isDemoMode()) {
-    // 4 newest orders from new referred friends -> brings the order total to 204.
-    [['rowan',5,8,6,'pending'],['sienna',5,7,3,'pending'],['felix',5,6,6,'pending'],['amara',5,5,3,'pending']]
-      .forEach(function(s){ pushTxn(s[0], new Date(YEAR, s[1], s[2]), s[3], s[4]); });
-    // 20 most-recent transactions populate the small (glance) window; first few pending.
-    [[5,4,6,'pending'],[5,1,3,'pending'],[4,28,9,'pending'],[4,22,3,'pending'],[4,14,3,'pending'],
-     [4,4,3,'approved'],[3,27,6,'approved'],[3,20,3,'approved'],[3,13,6,'approved'],[3,6,3,'approved'],
-     [2,27,6,'approved'],[2,20,9,'approved'],[2,12,3,'approved'],[2,5,6,'approved'],[1,28,3,'approved'],
-     [1,20,9,'approved'],[1,12,6,'approved'],[1,5,3,'approved'],[0,28,6,'approved'],[0,20,3,'approved']
-    ].forEach(function(s, idx){ pushTxn(NAMES[idx % NAMES.length], new Date(YEAR, s[0], s[1]), s[2], s[3]); });
-    // ~180 older transactions stepping back through prior years -> ~200 total when expanded.
-    var cur = new Date(YEAR, 0, 20), amts = [3,6,9,3,6,3,9,6,3,6,9,3];
-    for(var i=0; i<180; i++){
-      cur = new Date(cur.getTime() - (5 + (i%5)) * 86400000);
-      pushTxn(NAMES[(i+7) % NAMES.length], new Date(cur), amts[i % amts.length], 'cashed_out');
-    }
+      var r = DEMO.rng(20261001), DAY = 86400000, now = Date.now();
+      var SIZE = [1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,3,3,3,4,4];   // 45% / 30% / 15% / 10%
+      var who = DEMO.people(DEMO_REFERRAL_ORDERS + 40, 77);
+      var ageDays = 1.5;
+      for (var i = 0; i < DEMO_REFERRAL_ORDERS; i++) {
+        // Busier recently (the community is growing): gaps widen with age.
+        ageDays += (i < 40 ? 1.1 : i < 120 ? 2.6 : 4.4) * (0.45 + r() * 1.1);
+        var mugs = SIZE[Math.floor(r() * SIZE.length)];
+        var st = ageDays <= 30 ? 'pending' : ageDays <= 92 ? 'approved' : 'cashed_out';
+        // A distinct friend per order: the account cells count friends, the points count
+        // referrals, and the two must agree (6 x hugs + 1 x referrals == DEMO.points).
+        pushTxn(who[i], new Date(now - ageDays * DAY), 1.5 * mugs, st);
+      }
     }
     var CURRENT_YEAR = txns[0] ? txns[0].date.getFullYear() : YEAR;
     function fmtDate(dt){
-      var s = MON[dt.getMonth()] + ' ' + dt.getDate();
+      var s = monName(dt) + ' ' + dt.getDate();
       if(dt.getFullYear() !== CURRENT_YEAR) s += ' ' + dt.getFullYear();
       return s;
+    }
+    // The rate this row actually earned (stored on the row server-side: 10% before the 5% base
+    // programme, 5% or 10% since). Derived from the row's own figures, never a literal.
+    function cashbackLabel(t){
+      if(t.rate != null && t.rate > 0) return hugTpl('cashback ({pct})', { pct: Math.round(t.rate * 100) + '%' });
+      if(t.amtKnown !== false && t.subtotal > 0 && t.amt > 0) return hugTpl('cashback ({pct})', { pct: Math.round(t.amt / t.subtotal * 100) + '%' });
+      return 'cashback';
     }
     function matches(t, q){
       if(!q) return true; q = q.toLowerCase();
@@ -4797,17 +6114,52 @@
         || t.items.some(function(it){ return it.name.toLowerCase().indexOf(q) >= 0; });
     }
     var GLANCE_LIMIT = 20;
+    // Security (Phase 1C): history rows are built from backend-derived, user-
+    // controllable text (a referrer's chosen name, order summary, channel, order
+    // number). Never interpolate those into innerHTML — compose with DOM nodes and
+    // textContent so markup in the data is rendered as text, not executed.
+    function mk(tag, cls, text){
+      var e = document.createElement(tag);
+      if(cls) e.className = cls;
+      if(text != null) e.textContent = text;
+      return e;
+    }
+    function histStatusClass(st){
+      return (st === 'pending' || st === 'cashed_out' || st === 'approved') ? st : '';
+    }
     function render(q, full){
-      var html = '', shown = 0;
+      list.textContent = '';
+      var shown = 0;
       for(var k=0; k<txns.length; k++){
         var t = txns[k]; if(t.cancelled) continue; if(!matches(t, q)) continue;
         if(!full && shown >= GLANCE_LIMIT) break;
         shown++;
-        html += '<div class="history-row '+t.st+'" data-txn="'+k+'">'
-              + '<span>'+t.name+'</span><span class="date">'+fmtDate(t.date)+'</span>'
-              + '<span>+'+GBP(t.amt)+'</span></div>';
+        var rowEl = mk('div', 'history-row ' + histStatusClass(t.st));
+        rowEl.setAttribute('data-txn', String(k));
+        rowEl.appendChild(mk('span', null, t.name));
+        rowEl.appendChild(mk('span', 'date', fmtDate(t.date)));
+        // amtKnown === false means the reward could not be read off the row (a
+        // renamed/absent column). Showing "+£0.00" there is a plausible, wrong
+        // statement about the customer's money; show nothing instead.
+        rowEl.appendChild(mk('span', null, t.amtKnown === false ? UNKNOWN : '+' + GBP(t.amt)));
+        list.appendChild(rowEl);
       }
-      list.innerHTML = html;
+      if(!shown && histError) list.appendChild(errorRow('couldn’t load your referrals', loadLive));
+    }
+    // A distinct "the read failed" row, with a retry. Without it a failed fetch
+    // renders a blank list that is indistinguishable from "you have no referrals
+    // yet" — the app telling a customer they have nothing when it simply does not know.
+    function errorRow(message, retry){
+      var box = mk('div', 'load-error');
+      box.appendChild(mk('span', 'load-error-msg', message));
+      var btn = mk('button', 'load-error-retry', 'retry');
+      btn.type = 'button';
+      ['pointerdown','touchstart','pointermove'].forEach(function(ev){
+        btn.addEventListener(ev, function(e){ e.stopPropagation(); });
+      });
+      btn.addEventListener('click', function(e){ e.stopPropagation(); retry(); });
+      box.appendChild(btn);
+      return box;
     }
     render('', true);
 
@@ -4828,32 +6180,66 @@
       search.addEventListener(ev, function(e){ e.stopPropagation(); });
     });
 
-    var open = false;
+    var open = false, closeHold = 0;
+    // Same construction as the home leaderboard (its setExpand says why): the rail slides
+    // (listSlide), the window under it takes its open height in one step as the rail starts up
+    // and, on a close, HOLDS it until the rail is home. Both steps land below the screen's bottom
+    // edge, where the window ends in either state, so neither is seen. History used to animate
+    // that height too, and ended each move with a last-frame jump (open -0.65 pt, close +0.74 pt)
+    // and, 200 ms after a close, its rows dropping 2.5 pt (simulator, 2026-10-16).
+    var mover = listSlide(rail, content, 'history-wa');
+    function releaseCloseHold(){
+      clearTimeout(closeHold); closeHold = 0;
+      wrap.style.removeProperty('height');
+    }
     function setExpand(next){
       open = next;
+      var seq = mover.next();
+      // A close still sliding home: drop its hold first, or a quick re-open would keep it.
+      releaseCloseHold();
       if(open){
+        // Rows past the glance twenty are laid out now, below the screen, not in the slide's first frame.
+        content.classList.remove('history-glance');
+        content.classList.add('history-prep');
         var cR = content.getBoundingClientRect(), wR = wrap.getBoundingClientRect();
         var nav = screen.querySelector('.bottom-nav');
         var navTop = nav ? nav.getBoundingClientRect().top : cR.bottom;
-        var topInset = 6;
+        var topInset = 8;   // = the head band's reach above the head (styles.css --head-band-pad), so it is not clipped
         // getBoundingClientRect is post-transform (scaled by --fit on a narrow
         // screen / the website mockup), but --hist-* apply in the design space
         // the .phone scales. Convert the measured distances back to design px,
         // else the shift + window come out short and leave gaps top and bottom.
         var fit = window.__hugFit || 1;
         var shift = Math.max(0, (wR.top - cR.top) / fit - topInset);
-        var full = Math.max(180, (navTop - cR.top) / fit - topInset - 8);
+        // A WHOLE number of px, like the closed fit: with a fractional height iOS placed the list's
+        // layer a whole pt or more off, so it hopped when the window changed size.
+        var full = Math.round(Math.max(180, (navTop - cR.top) / fit - topInset - 8));
         content.style.setProperty('--hist-shift', shift + 'px');
         wrap.style.setProperty('--history-window-height', full + 'px');
-        content.classList.add('history-open');
+        content.classList.add('history-open');   // the fades, the search pill; the rail moves in mover.later
         plus.setAttribute('aria-label','Hide all transactions');
+        mover.later(seq, function(){
+          if(!mover.run(mover.y(), -shift)) content.classList.add('history-slid');
+        });
       } else {
-        content.classList.remove('history-open');
+        wrap.style.height = getComputedStyle(wrap).height;
+        // Back to the glance twenty now, not in the slide's first frame: hiding ~250 rows there
+        // held the slide's first frames back, and the board appeared half way down (simulator).
+        content.classList.add('history-glance');
+        if(search.value){ search.value = ''; render('', true); }
+        content.classList.remove('history-open', 'history-prep');
         content.style.removeProperty('--hist-shift');
         wrap.style.removeProperty('--history-window-height');
-        if(search.value){ search.value = ''; render('', true); }
         plus.setAttribute('aria-label','Show all transactions');
         try{ list.dispatchEvent(new Event('scroll')); }catch(e){}
+        mover.later(seq, function(){
+          // 0.01: the rail's resting transform (styles.css); '' leaves it to the stylesheet.
+          if(!mover.run(mover.y(), 0.01, '')) content.classList.remove('history-slid');
+          closeHold = setTimeout(function(){
+            releaseCloseHold();
+            try{ list.dispatchEvent(new Event('scroll')); }catch(e){}   // re-read the fade at the closed height
+          }, mover.releaseAt());
+        });
       }
     }
     plus.addEventListener('click', function(e){ e.stopPropagation(); setExpand(!open); });
@@ -4861,24 +6247,46 @@
     var ov = document.createElement('div'); ov.className = 'txn-detail'; screen.appendChild(ov);
     function openDetail(k){
       var t = txns[k]; if(!t) return;
-      var rows = t.items.map(function(it){
-        return '<div class="txn-line"><span>'+it.qty+'\u00d7 '+it.name+'</span><span>'+GBP(it.price*it.qty)+'</span></div>';
-      }).join('');
-      var dstr = MON[t.date.getMonth()]+' '+t.date.getDate()+' '+t.date.getFullYear()+' \u00b7 '+t.time;
-      ov.innerHTML =
-        '<button class="txn-back" type="button" aria-label="Back">\u2039 back</button>'
-        + '<div class="txn-head"><span class="txn-name">'+t.name+'</span>'
-        + '<span class="txn-amt gradient-accent">+'+GBP(t.amt)+'</span></div>'
-        + '<div class="txn-meta">'+dstr+'</div>'
-        + '<div class="txn-status txn-'+t.st+'">'+(t.st==='pending'?'cashback pending':(t.st==='cashed_out'?'cashed out':'cashback deposited'))+'</div>'
-        + '<div class="txn-sec">order</div><div class="txn-lines">'+rows+'</div>'
-        + '<div class="txn-line txn-total"><span>order total</span><span>'+GBP(t.subtotal)+'</span></div>'
-        + '<div class="txn-line"><span>cashback (10%)</span><span class="gradient-accent">+'+GBP(t.amt)+'</span></div>'
-        + '<div class="txn-sec">details</div>'
-        + '<div class="txn-kv"><span>transaction</span><span>'+t.id+'</span></div>'
-        + '<div class="txn-kv"><span>channel</span><span>'+t.channel+'</span></div>'
-        + '<div class="txn-kv"><span>payment</span><span>'+t.pay+'</span></div>'
-        + '<div class="txn-kv"><span>referred by</span><span>'+t.name+'</span></div>';
+      var dstr = monName(t.date)+' '+t.date.getDate()+' '+t.date.getFullYear()+' \u00b7 '+t.time;
+      // Security (Phase 1C): compose the receipt with DOM nodes + textContent.
+      // t.name / t.id / t.channel / item names are backend-derived and untrusted.
+      function kv(label, val){
+        var d = mk('div', 'txn-kv');
+        d.appendChild(mk('span', null, label));
+        d.appendChild(mk('span', null, val));
+        return d;
+      }
+      function twoCol(cls, label, val, valCls){
+        var d = mk('div', cls);
+        d.appendChild(mk('span', null, label));
+        d.appendChild(mk('span', valCls || null, val));
+        return d;
+      }
+      ov.textContent = '';
+      var back = mk('button', 'txn-back', '\u2039 back');
+      back.type = 'button'; back.setAttribute('aria-label', 'Back');
+      ov.appendChild(back);
+      var head = mk('div', 'txn-head');
+      head.appendChild(mk('span', 'txn-name', t.name));
+      // Same honesty rule as the row: an unreadable reward states nothing.
+      head.appendChild(mk('span', 'txn-amt gradient-accent', t.amtKnown === false ? UNKNOWN : '+' + GBP(t.amt)));
+      ov.appendChild(head);
+      ov.appendChild(mk('div', 'txn-meta', dstr));
+      var statusLabel = t.st==='pending' ? 'cashback pending' : (t.st==='cashed_out' ? 'cashed out' : 'cashback deposited');
+      ov.appendChild(mk('div', 'txn-status txn-' + histStatusClass(t.st), statusLabel));
+      ov.appendChild(mk('div', 'txn-sec', 'order'));
+      var lines = mk('div', 'txn-lines');
+      t.items.forEach(function(it){
+        lines.appendChild(twoCol('txn-line', it.qty + '\u00d7 ' + it.name, GBP(it.price * it.qty)));
+      });
+      ov.appendChild(lines);
+      ov.appendChild(twoCol('txn-line txn-total', 'order total', GBP(t.subtotal)));
+      ov.appendChild(twoCol('txn-line', cashbackLabel(t), t.amtKnown === false ? UNKNOWN : '+' + GBP(t.amt), 'gradient-accent'));
+      ov.appendChild(mk('div', 'txn-sec', 'details'));
+      ov.appendChild(kv('transaction', t.id));
+      ov.appendChild(kv('channel', t.channel));
+      ov.appendChild(kv('payment', t.pay));
+      ov.appendChild(kv('referred by', t.name));
       requestAnimationFrame(function(){ ov.classList.add('open'); });
       ov.querySelector('.txn-back').addEventListener('click', function(e){ e.stopPropagation(); ov.classList.remove('open'); });
     }
@@ -4932,7 +6340,7 @@
     var cellQr=summaryCell('qr scans'), cellRef=summaryCell('referrals'), cellOrd=summaryCell('orders'),
         cellPend=summaryCell('cashback pending'), cellDep=summaryCell('cashback deposited'),
         cellCashed=summaryCell('cashed out');
-    var QR_SCANS = cellQr ? (parseInt(cellQr.textContent,10)||0) : 0; // standalone: scans aren't in the referral txns
+    var QR_SCANS = isDemoMode() ? DEMO.qrScans : (cellQr ? (parseInt(cellQr.textContent,10)||0) : 0); // standalone: scans aren't in the referral txns
     function gbpP(p){ return '£'+(p/100).toFixed(2); }
     function computeTotals(){
       var pend=0, dep=0, cashed=0, orders=0, friends={};
@@ -4949,24 +6357,57 @@
         referrals:Object.keys(friends).length, qrScans:QR_SCANS };
     }
     function applySummary(){
-      var referrals, pending, deposited, cashedOut;
+      var referrals, pending, deposited, cashedOut, scans, known;
       if(isDemoMode()){
+        // PROTOTYPE PATH — curated, self-consistent figures, no backend involved.
+        // Its QR-scan figure is the one already in the markup; it is presented as
+        // part of a prototype, not asserted to a real customer about their account.
         var c = computeTotals();
         referrals = c.orders;                 // every referral ended in an order -> referrals = orders
         pending = c.pending; deposited = c.deposited; cashedOut = c.cashedOut;
+        scans = QR_SCANS;
+        known = true;
       } else {
-        var ref = window.__hugReferral || {};
+        // LIVE PATH — every figure here is a statement to a real customer about
+        // their own money, so it may only ever be something the server actually said.
+        var ref = window.__hugReferral;
+        // No balance object yet, or one explicitly flagged unknown (failed/pending
+        // read), means we do not know. renderReferralBalance owns that flag and
+        // already blanks the home pill on it; the account cells now honour it too,
+        // instead of printing a confident "£0.00 / 0" over a read that never landed.
+        known = !!(ref && ref.known !== false);
+        ref = ref || {};
         referrals = ref.count || 0;
         pending = ref.pendingCents || 0; deposited = ref.availableCents || 0; cashedOut = ref.cashedOutCents || 0;
+        // QR scans: there is NO scan counter in the backend. The previous code
+        // printed Math.round(referrals * 2.8) and showed that invention to the
+        // customer as fact — 3 referrals were reported as "8 QR scans". Nothing
+        // honest can be said here until a real server-side count exists, so say
+        // nothing. Do not substitute a different multiplier.
+        scans = null;
       }
-      // A QR scan is a potential order; a referral is a converted one -> scans >> referrals.
-      var scans = referrals > 0 ? Math.round(referrals * 2.8) : 0;
-      if(cellQr) cellQr.textContent = String(scans);
-      if(cellRef) cellRef.textContent = String(referrals);
-      if(cellPend) cellPend.textContent = gbpP(pending);
-      if(cellDep) cellDep.textContent = gbpP(deposited);
-      if(cellCashed) cellCashed.textContent = gbpP(cashedOut);
-      return { pending:pending, deposited:deposited, cashedOut:cashedOut, referrals:referrals, scans:scans };
+      if(summaryMain) summaryMain.dataset.balanceState = known ? 'known' : 'unknown';
+      if(cellQr) cellQr.textContent = scans == null ? UNKNOWN : String(scans);
+      if(cellRef) cellRef.textContent = known ? String(referrals) : UNKNOWN;
+      if(cellPend) cellPend.textContent = known ? gbpP(pending) : UNKNOWN;
+      if(cellDep) cellDep.textContent = known ? gbpP(deposited) : UNKNOWN;
+      if(cellCashed) cellCashed.textContent = known ? gbpP(cashedOut) : UNKNOWN;
+      renderSummaryError(!known && !!(window.__hugReferral && window.__hugReferral.loadFailed));
+      return { pending:pending, deposited:deposited, cashedOut:cashedOut, referrals:referrals, scans:scans, known:known };
+    }
+    // "couldn't load — retry" under the summary cells. Only shown once a read has
+    // actually FAILED (not merely while one is in flight), so it never nags during boot.
+    var summaryErrEl = null;
+    function renderSummaryError(show){
+      if(!summaryMain) return;
+      if(show && !summaryErrEl){
+        summaryErrEl = errorRow('couldn’t load your balance', function(){
+          if(typeof window.__hugRetryBalance === 'function') window.__hugRetryBalance();
+        });
+        summaryMain.appendChild(summaryErrEl);
+      } else if(!show && summaryErrEl){
+        summaryErrEl.remove(); summaryErrEl = null;
+      }
     }
     applySummary();
 
@@ -4975,31 +6416,38 @@
     function buildLiveTxn(row){
       var d = row.created_at ? new Date(row.created_at) : new Date();
       var st = row.bucket==='pending' ? 'pending' : (row.bucket==='cashed_out' ? 'cashed_out' : 'approved');
+      // `(Number(row.reward_cents)||0)/100` turned an absent or RENAMED column into a
+      // perfectly plausible £0.00 on every row — a silent, total misstatement of what
+      // the customer earned. A missing/unparseable value is unknown, not zero. A real
+      // 0 is still a 0.
+      var cents = Number(row.reward_cents);
+      var amtKnown = row.reward_cents != null && row.reward_cents !== '' && isFinite(cents);
       return { id: row.order_number || ('HUG-'+String(row.id||'').slice(0,8)),
-        name: row.name || 'a friend', date: d, amt: (Number(row.reward_cents)||0)/100, st: st, time: '',
+        name: row.name || 'a friend', date: d, amt: amtKnown ? cents/100 : 0, amtKnown: amtKnown, st: st, time: '',
         items: [{ name: row.order_summary || 'order', qty: 1, price: 0 }],
-        subtotal: 0, pay: '—', channel: row.channel || '', cancelled: false };
+        subtotal: 0, pay: UNKNOWN, channel: row.channel || '', cancelled: false,
+        // the rate this row was recorded at, when the server says (referrals.reward_rate)
+        rate: (row.reward_rate != null && isFinite(Number(row.reward_rate))) ? Number(row.reward_rate) : null };
     }
     function loadLive(){
       if(isDemoMode()) return;
       var backend = window.HugBackend;
       if(document.documentElement.dataset.accountStatus !== 'active' || !(backend && backend.getReferralHistory)){
-        txns = []; CURRENT_YEAR = new Date().getFullYear(); render('', true); applySummary(); return;
+        // Signed out / no backend: genuinely nothing to show, and we know that.
+        txns = []; histError = false; CURRENT_YEAR = new Date().getFullYear(); render('', true); applySummary(); return;
       }
-      backend.getReferralHistory(200).then(function(res){
-        txns = (res && res.ok && Array.isArray(res.rows)) ? res.rows.map(buildLiveTxn) : [];
+      // A failed read is NOT an empty account. Both used to render the same blank
+      // list, so a customer with referrals was shown "you have none".
+      function failed(){ txns = []; histError = true; render('', true); applySummary(); }
+      Promise.resolve(backend.getReferralHistory(200)).then(function(res){
+        if(!(res && res.ok && Array.isArray(res.rows))) return failed();
+        txns = res.rows.map(buildLiveTxn);
+        histError = false;
         CURRENT_YEAR = txns[0] ? txns[0].date.getFullYear() : new Date().getFullYear();
         render('', true); applySummary();
-      }).catch(function(){ txns=[]; render('', true); applySummary(); });
+      }).catch(failed);
     }
-    // Demo cash-out: move all matured (deposited) cashback into "cashed out" so
-    // the numbers shift exactly as a real cash-out would, then re-render.
-    function cashOutDemo(){
-      for(var k=0;k<txns.length;k++){ if(txns[k].st==='approved') txns[k].st='cashed_out'; }
-      render('', true); applySummary();
-      if(typeof renderReferralBalance==='function') renderReferralBalance();
-    }
-    window.__hugAccountHistory = { loadLive: loadLive, applySummary: applySummary, cashOutDemo: cashOutDemo };
+    window.__hugAccountHistory = { loadLive: loadLive, applySummary: applySummary };
     loadLive();
     /* Returning an item cancels a pending order: the order count and pending
        cashback drop; referrals and qr scans are unchanged; the row leaves the list.
@@ -5166,12 +6614,16 @@
         e.stopPropagation();
         var code = String(referralCode || ''); if(!code) return;
         // Link straight to the Shopify product picker with the referral baked in:
-        //   ?ref=<code>      → drives the friend's 10% + credits THIS user (hug-referral.js)
+        //   ?ref=<code>      → drives the friend's discount (the server's rate: a flat 5%) + credits THIS user (hug-referral.js)
         //   &ref_name=<user> → shows "<username>'s referral" at checkout (personable)
         // (Branded thehuggable.co domain → swap the host once it's connected to Shopify.)
         var name = String(window.__hugRefName || '');
         var url = 'https://zyeeke-kx.myshopify.com/products/hug-o?ref=' + encodeURIComponent(code) + (name ? '&ref_name=' + encodeURIComponent(name) : '');
-        var text = 'Every drink in one cup — brewer, cold brew, shaker, bottle, insulated cup. Nine heights, all in your pocket. Here’s 10% off your first hug:';
+        // ONE template, translated whole by the dictionary, then the friend's rate dropped in:
+        // The server's current friend rate (a flat 5% since 2026-10-13). No concatenated fragments.
+        var pct = (window.__hugReferralRates ? window.__hugReferralRates.friendPercent() : 5) + '%';
+        var tpl = 'Every drink in one cup — brewer, cold brew, shaker, bottle, insulated cup. Nine heights, all in your pocket. Here’s {pct} off your first hug:';
+        var text = hugTpl(tpl, { pct: pct });
         var payload = { title: 'hug', text: text, url: url, dialogTitle: 'Share your hug link' };
         // Native share sheet first (reliable on iOS + Android), then Web Share, then copy.
         Promise.resolve(window.HugBackend && window.HugBackend.shareLink ? window.HugBackend.shareLink(payload) : { ok:false })
@@ -5237,23 +6689,79 @@
 
   // Cash out: when the deposited balance reaches £20 the card pulses; tapping it
   // opens an on-theme confirm (amount, fee if under £20, bank ending) and runs the
-  // existing referral-cashout backend (Stripe payout / Shopify store credit). Demo
-  // simulates the move locally so the figures shift exactly as they would live.
+  // existing referral-cashout backend (a Stripe transfer to the referrer's own Stripe account,
+  // which pays it into their bank). Prototype mode moves nothing: it says "Cashed out" on a note
+  // that plainly says it is the sample, and the sample balance stays loaded (owner, 2026-10-17).
+  // Live, the server refuses until the referrer has a bank on Stripe (needs-onboarding): the app
+  // then offers Stripe's own bank page (startPayoutSetup → its hosted link), so bank details are
+  // typed into Stripe and never into hug. Tapping Cash out also chooses bank payouts
+  // (not-cash-method → setPayoutMethod('cash')): that tap is the customer asking for cash.
   (function cashoutFeature(){
     var card = document.querySelector('.account-main .simple-row.wide.approved');
     if(!card) return;
     var MIN = 2000; // £20 free-cash-out threshold (under £20 carries a £2 fee).
+    var BANK_STARTED = 'hug_bank_setup_started';
     function avail(){ var r = window.__hugReferral || {}; return r.availableCents || 0; }
     function gbp(c){ return '£' + (c/100).toFixed(2); }
     function refresh(){ card.classList.toggle('cashable', avail() >= MIN); }
     window.__hugCashout = { refresh: refresh };
+    function be(){ return window.HugBackend || {}; }
+    function call(name){
+      var f = be()[name];
+      var args = Array.prototype.slice.call(arguments, 1);
+      return f ? Promise.resolve(f.apply(be(), args)).catch(function(){ return { ok: false }; }) : Promise.resolve({ ok: false });
+    }
+    function startedBank(){ try { return localStorage.getItem(BANK_STARTED) === '1'; } catch(e){ return false; } }
+    function markBank(){ try { localStorage.setItem(BANK_STARTED, '1'); } catch(e){} }
+    var busy = false;
+
+    function sayResult(res, net){
+      if(res && res.ok){
+        showToast('Cashing out ' + gbp(res.netCents || net) + ' — it’ll arrive shortly.');
+        if(typeof refreshReferralBalanceFromServer === 'function') refreshReferralBalanceFromServer();
+      } else if(res && res.status === 'below-minimum'){ showToast('A little more cashback is needed before you can cash out.'); }
+      else { showToast('Couldn’t cash out right now. Please try again.'); }
+    }
+    // When the Stripe page closes, ask Stripe again (the account exists by then, so this only
+    // re-reads it and records whether payouts are on).
+    async function afterBankPage(){
+      var s = await call('startPayoutSetup');
+      if(s && s.ok && s.status === 'ready') showToast('Bank details added. Tap Cash out to send your cashback.');
+      else showToast('Bank setup isn’t finished yet. Tap Cash out to carry on.');
+    }
+    // Returns a cash-out result once the bank is ready, or null when the customer is off on
+    // Stripe's page (or said not now).
+    async function withBank(){
+      // Already started on this phone: Stripe may have finished checking since. Ask it quietly
+      // before showing the add-your-bank step again.
+      if(startedBank()){
+        var q = await call('startPayoutSetup');
+        if(q && q.ok && q.status === 'ready') return call('cashOutNow');
+      }
+      var go = await showConfirm({ title: 'Add your bank',
+        body: 'To cash out, add your bank details with Stripe, our payments partner. You type them on Stripe’s secure page, never in the hug app.',
+        confirm: 'Add bank details', cancel: 'Not now' });
+      if(!go) return null;
+      var s = await call('startPayoutSetup');
+      if(s && s.ok && s.status === 'ready') return call('cashOutNow');
+      if(s && s.ok && s.status === 'onboarding' && s.url){
+        markBank();
+        var links = window.HugLinks;
+        var opened = links && links.open ? await links.open(s.url, afterBankPage) : false;
+        if(!opened) showToast('Couldn’t open bank setup. Please try again.');
+        return null;
+      }
+      showToast('Couldn’t open bank setup. Please try again.');
+      return null;
+    }
 
     async function startCashout(){
+      if(busy) return;
       var a = avail();
       if(a <= 0){ showToast('No cashback to cash out yet.'); return; }
       var demo = isDemoMode();
       var last4 = demo ? DEMO.bankLast4 : (window.__hugBankLast4 || '');
-      var acct = last4 ? ('your bank account ending ••' + last4) : 'your linked bank account';
+      var acct = last4 ? ('your bank account ending ••' + last4) : 'your bank';
       var fee = a >= MIN ? 0 : 200;
       var net = Math.max(0, a - fee);
       var body = fee
@@ -5262,21 +6770,209 @@
       var ok = await showConfirm({ title: 'Cash out', body: body, confirm: 'Cash out', cancel: 'Not now' });
       if(!ok) return;
       if(demo){
-        if(window.__hugAccountHistory && window.__hugAccountHistory.cashOutDemo) window.__hugAccountHistory.cashOutDemo();
-        showToast('Cashing out ' + gbp(net) + ' to ' + (last4 ? ('••' + last4) : 'your bank') + '.');
+        showNote({ title: 'Cashed out', amount: gbp(net), returnFocus: card,
+          lines: ['This is the sample app, so no real money moved.', 'In the real app, this sends it to your bank account.'] });
         return;
       }
-      var res = await (window.HugBackend && window.HugBackend.cashOutNow ? window.HugBackend.cashOutNow() : Promise.resolve({ ok: false }));
-      if(res && res.ok){
-        showToast('Cashing out ' + gbp(res.netCents || net) + ' — it’ll arrive shortly.');
-        if(typeof refreshReferralBalanceFromServer === 'function') refreshReferralBalanceFromServer();
-      } else if(res && res.status === 'needs-onboarding'){ showToast('Add your bank details first to cash out.'); }
-      else if(res && res.status === 'not-cash-method'){ showToast('Switch to bank cash-out in settings first.'); }
-      else if(res && res.status === 'below-minimum'){ showToast('A little more cashback is needed before you can cash out.'); }
-      else { showToast('Couldn’t cash out right now. Please try again.'); }
+      busy = true;
+      try {
+        var res = await call('cashOutNow');
+        if(res && res.status === 'not-cash-method'){
+          var m = await call('setPayoutMethod', 'cash');
+          if(m && m.ok) res = await call('cashOutNow');
+        }
+        if(res && res.status === 'needs-onboarding'){
+          res = await withBank();
+          if(!res) return;
+          if(res.status === 'needs-onboarding'){ showToast('Bank setup isn’t finished yet. Tap Cash out to carry on.'); return; }
+        }
+        sayResult(res, net);
+      } finally { busy = false; }
     }
     card.addEventListener('click', startCashout);
     refresh();
+  })();
+
+  // CASHBACK PENDING: tap the card and a short note comes to the front of the screen saying why
+  // it waits (owner, 2026-10-16: "it should come to the fore and not be a kind of drop down"); the
+  // app's own pop-out card (showConfirm's look), with one button. Each line is the server's rule,
+  // not a guess: record_referral holds a reward for a month (matures_at = now() + interval
+  // '1 month'); settle_matured_referrals then makes it available, which the app shows as
+  // deposited; apply_referral_refund takes a return's share off the reward (all of it on a full
+  // refund). The note sits outside the phone's tap handlers (on body), so closing it never also
+  // counts as the account screen's tap-to-go-back.
+  (function pendingNote(){
+    var screen = document.querySelector('.screen[data-screen="account"]');
+    var card = screen && screen.querySelector('.account-main .simple-row.wide.pending');
+    if(!card) return;
+    card.setAttribute('role', 'button');
+    card.setAttribute('tabindex', '0');
+    card.setAttribute('aria-haspopup', 'dialog');
+    var LINES = ['Cashback is held for a month after your friend’s order, while it can still be returned.',
+                 'Once the returns window has closed, it’s deposited and ready to spend.',
+                 'If anything is returned, the cashback on it comes off.'];
+    var closeNote = null;
+    function open(){
+      if(closeNote) return;
+      closeNote = showNote({ title: 'Cashback pending', lines: LINES, returnFocus: card,
+        onClose: function(){ closeNote = null; } });
+    }
+    function close(){ if(closeNote) closeNote(); }
+    card.addEventListener('click', function(e){ e.stopPropagation(); open(); });
+    card.addEventListener('keydown', function(e){
+      if(e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault(); open();
+    });
+    new MutationObserver(function(){ if(!screen.classList.contains('active')) close(); })
+      .observe(screen, { attributes: true, attributeFilter: ['class'] });
+  })();
+
+  // Shop credit: spend the referral balance on the next order. The server (referral-spend) turns
+  // the balance into Shopify gift card(s); the basket shows a "Use my balance" switch (on by
+  // default) and the amount that comes off, and checkout pays with the card codes. Status is
+  // cached and re-read at most once a minute (and only when the basket / balance screen opens).
+  // Prototype mode makes no real call: it shows the sample balance and never reaches the pay step.
+  (function shopCreditFeature(){
+    var TTL = 60000, RETRY = 15000;
+    var row = document.getElementById('credit-row');
+    var toggle = document.getElementById('credit-toggle');
+    var line = document.getElementById('checkout-credit');
+    var lineValue = document.getElementById('checkout-credit-value');
+    var note = document.getElementById('spend-note');
+    var noteLine = document.getElementById('spend-note-line');
+    var noteValue = document.getElementById('spend-note-value');
+    if(!row || !toggle || !line || !lineValue || !note) return;
+    var status = null, statusAt = 0, failedAt = 0, inflight = null, lastGrand = 0, haveGrand = false;
+    function gbp(c){ return '£' + (c/100).toFixed(2); }
+    function signedIn(){ return accountStatus === 'active'; }
+    function spendable(){
+      if(!signedIn()) return 0;
+      if(isDemoMode()) return Math.max(0, (window.__hugReferral && window.__hugReferral.availableCents) || 0);
+      // Not gated on status.enabled: with the server switch off, existing cards are still the customer's money.
+      return status && status.ok ? Math.max(0, status.spendableCents || 0) : 0;
+    }
+    // The customer's own choice (default ON), kept apart from toggle.checked: greying the switch out
+    // when there is nothing to spend must never lose it.
+    var choice = true;
+    function on(){ return choice && !toggle.disabled; }
+    function render(grand){
+      if(typeof grand === 'number'){ lastGrand = grand; haveGrand = true; }
+      var sp = spendable();
+      var grandCents = Math.round(Math.max(0, lastGrand) * 100);
+      // The row is ALWAYS there. With nothing to spend it is disabled, off and greyed.
+      var show = sp > 0 && grandCents > 0;
+      toggle.disabled = !show;
+      toggle.checked = show && choice;
+      toggle.setAttribute('aria-disabled', show ? 'false' : 'true');
+      row.classList.toggle('is-disabled', !show);
+      var credit = show && choice ? Math.min(sp, grandCents) : 0;
+      line.hidden = credit <= 0;
+      if(credit > 0) lineValue.textContent = '−' + gbp(credit);
+      if(haveGrand){
+        var totalEl = document.getElementById('checkout-total-value');
+        if(totalEl) totalEl.textContent = gbp(grandCents - credit);
+      }
+      // Account note: only when there is something to spend.
+      var dep = (window.__hugReferral && window.__hugReferral.availableCents) || 0;
+      note.hidden = sp <= 0;
+      noteLine.hidden = sp <= 0 || sp === dep;
+      if(sp > 0) noteValue.textContent = gbp(sp);
+    }
+    function ensure(){
+      if(!signedIn()){ status = null; statusAt = 0; render(); return Promise.resolve(); }
+      if(isDemoMode()){ render(); return Promise.resolve(); }
+      var now = Date.now();
+      if(inflight) return inflight;
+      if((status && now - statusAt < TTL) || (now - failedAt < RETRY)) return Promise.resolve();
+      var be = window.HugBackend;
+      if(!be || !be.enabled || !be.getShopCredit) return Promise.resolve();
+      inflight = be.getShopCredit().then(function(res){
+        if(res && res.ok){ status = res; statusAt = Date.now(); failedAt = 0; } else { failedAt = Date.now(); }
+      }).catch(function(){ failedAt = Date.now(); }).then(function(){ inflight = null; render(); });
+      return inflight;
+    }
+    // Any route into the basket or the balance screen (tap, swipe, deep link) ends with the
+    // screen gaining .active, so watch that rather than hooking each navigation path.
+    var obs = new MutationObserver(function(muts){
+      muts.forEach(function(m){ if(m.target.classList.contains('active')) ensure(); });
+    });
+    ['checkout', 'account'].forEach(function(n){
+      var el = document.querySelector('.screen[data-screen="' + n + '"]');
+      if(el){ obs.observe(el, { attributes: true, attributeFilter: ['class'] }); if(el.classList.contains('active')) ensure(); }
+    });
+    // True when the switch is showing and on: the pay step should then prepare the balance.
+    function wantsToSpend(){
+      return signedIn() && !isDemoMode() && on() && spendable() > 0;
+    }
+    // Issue the card(s) and return every code. Never throws. { ok:true, codes } | { ok:false }.
+    async function prepare(){
+      var be = window.HugBackend;
+      var res;
+      // The server converts only what this order needs: send the basket total shown before credit.
+      var amount = Math.round(Math.max(0, lastGrand) * 100);
+      var shown = Math.min(spendable(), amount);
+      try { res = await (be && be.prepareShopCredit ? be.prepareShopCredit(amount) : Promise.resolve({ ok: false })); }
+      catch(e){ res = { ok: false }; }
+      if(!res || !res.ok || !Array.isArray(res.cards)) return { ok: false };
+      // ok but no cards, or cards worth clearly less than the credit line on screen, is a failure:
+      // paying would silently charge more than the basket showed.
+      var have = res.cards.reduce(function(n, c){ return n + (c.balanceCents || 0); }, 0);
+      if(!res.cards.length || have < shown - 2){
+        status = res; statusAt = Date.now();
+        render();
+        return { ok: false };
+      }
+      status = res; statusAt = Date.now();
+      // New card: the balance moved into it, so the deposited figure is stale.
+      if(res.createdCents > 0 && typeof refreshReferralBalanceFromServer === 'function') refreshReferralBalanceFromServer();
+      return { ok: true, codes: res.cards.map(function(c){ return c.code; }) };
+    }
+    toggle.addEventListener('change', function(){ if(!toggle.disabled) choice = toggle.checked; render(); });
+    window.__hugShopCredit = { render: render, ensure: ensure, wantsToSpend: wantsToSpend, prepare: prepare };
+  })();
+
+  // Balance rows: "CASHBACK DEPOSITED" etc. stay on ONE line next to the chevron and the amount.
+  // CSS keeps them from wrapping (white-space: nowrap); when a long translation plus a big amount
+  // still would not fit the row, the label's font shrinks a half-pixel at a time until it does,
+  // so nothing wraps, overlaps or clips. Re-fitted whenever the text, the row's size or the fonts change.
+  (function balanceFit(){
+    var rows = Array.prototype.slice.call(document.querySelectorAll('.account-main .simple-row.wide'));
+    if(!rows.length) return;
+    var MIN = 7, queued = false, busy = false;
+    function fit(row){
+      var label = row.querySelector('.money-card-label');
+      if(!label) return;
+      label.style.fontSize = '';
+      var rr = row.getBoundingClientRect();
+      if(!rr.width || !row.offsetWidth) return;                 // not laid out (hidden): nothing to measure
+      var k = rr.width / row.offsetWidth;                       // the phone is scaled on narrow screens
+      var gap = (parseFloat(getComputedStyle(row).columnGap) || 0) * k;
+      var size = parseFloat(getComputedStyle(label).fontSize);
+      function over(){
+        var l = label.getBoundingClientRect(), limit = rr.right - (parseFloat(getComputedStyle(row).paddingRight) || 0) * k;
+        Array.prototype.forEach.call(row.children, function(c){
+          if(c === label) return;
+          var r = c.getBoundingClientRect();
+          if(r.width > 0 && r.left >= l.left) limit = Math.min(limit, r.left - gap);
+        });
+        return l.right > limit + 0.5;
+      }
+      while(size > MIN && over()){ size -= 0.5; label.style.fontSize = size + 'px'; }
+    }
+    function run(){
+      queued = false; busy = true;
+      rows.forEach(fit);
+      busy = false;
+    }
+    function queue(){ if(busy || queued) return; queued = true; requestAnimationFrame(run); }
+    if(window.ResizeObserver){ var ro = new ResizeObserver(queue); rows.forEach(function(r){ ro.observe(r); }); }
+    if(window.MutationObserver){
+      var mo = new MutationObserver(queue);
+      rows.forEach(function(r){ mo.observe(r, { childList: true, characterData: true, subtree: true }); });
+    }
+    window.addEventListener('resize', queue);
+    if(document.fonts && document.fonts.ready) document.fonts.ready.then(queue);
+    queue();
   })();
 
   (function leaderboardFeature(){
@@ -5296,24 +6992,89 @@
     var open = false;
     var loading = false;
     var rows = [];
-    // Curated rankings for the populated/demo build (window.__HUG_DEMO__).
-    var DEMO_ROWS = (function(){
-      var rows = [
-        { label:'ladymoon', points:341, me:false }, { label:'jack p', points:268, me:false },
-        { label:'hanna', points:229, me:false }, { label:'you', points:DEMO.points, me:true }
-      ];
-      var more = ['harry','ivy','luke','maya','sam','noa','ada','bo','cass','dot','evie','fox','greta',
-        'huxley','ines','jo','kemi','lux','mona','nia','ola','peg','quincy','rae','sid','tariq','beck',
-        'coco','dane','esme','freya','gia','hutch','isla','jasper','kara','lev','niko','pim','rhys',
-        'suki','tomas','val','zadie','odie','perry'];
-      var p = 197;
-      for(var i=0;i<more.length;i++){ rows.push({ label:more[i], points:p, me:false }); p = Math.max(20, p - 4); }
-      return rows;
-    })();
+    /* LAST KNOWN BOARD, painted on frame one.
+       The board used to start empty, render the "refer a friend to climb the leaderboard" line,
+       and then pop its real rows in ~1.5s later on a phone, pushing that line down. That line
+       was also untrue for those 1.5s: an unanswered read is not an empty board. So:
+         · the last board this device saw is kept, and drawn at once — like the balance and
+           the points hero, the network then only confirms it;
+         · with nothing cached, the board draws NOTHING until the read answers (the launch
+           checklist waits for it), rather than guessing "empty";
+         · an answer identical to what is on screen is not redrawn at all.
+       The cache is keyed to whoever it was read for, because rows carry is_me: a board read
+       while signed in must never show "you" to the next person to open the app. */
+    var LB_CACHE_KEY = 'hug-leaderboard-cache-v2';   // keep equal to HUG_LEADERBOARD_CACHE_KEY
+    var answered = false;       // a real answer (rows, or a confirmed-empty board) is on screen
+    var shownFor = null;        // whose board that is — rows carry is_me, so it is not portable
+    function lbWho(){
+      var h = document.documentElement;
+      if(h.dataset.accountStatus !== 'active') return 'guest';
+      try { return 'u:' + String(localStorage.getItem('hug-account-email-v1') || '').trim().toLowerCase(); } catch(e){ return 'u:'; }
+    }
+    // The board ranks TOKENS now (6 per hug + 1 per referral, referral_leaderboard().tokens).
+    // An older backend sends only eco_points (25 / 5) plus the mugs and referrals behind it, so
+    // the same formula is applied to those rather than showing eco points under a tokens name.
+    function boardTokens(x){
+      var t = Number(x.tokens);
+      if(x.tokens != null && isFinite(t)) return t;
+      var m = Number(x.mugs), r = Number(x.referrals);
+      if(x.mugs != null && x.referrals != null && isFinite(m) && isFinite(r)) return 6 * m + r;
+      return Number(x.eco_points) || 0;
+    }
+    function loadCachedBoard(){
+      try {
+        var c = JSON.parse(localStorage.getItem(LB_CACHE_KEY) || 'null');
+        if(!c || c.who !== lbWho() || !Array.isArray(c.rows)) return null;
+        return c.rows.filter(function(r){ return r && typeof r.label === 'string'; })
+          .map(function(r){ return { label: r.label, points: Number(r.points) || 0, me: !!r.me }; });
+      } catch(e){ return null; }
+    }
+    function saveCachedBoard(list){
+      var payload = JSON.stringify({ who: lbWho(), rows: list.slice(0, 50) });
+      try { localStorage.setItem(LB_CACHE_KEY, payload); } catch(e){}
+      // …and the durable copy, which is what a launch after a WebKit storage eviction reads back
+      // (restoreDurableAccountState). Same fire-and-forget queue as the balance and the points.
+      try { if(window.__hugDurable) window.__hugDurable.set(LB_CACHE_KEY, payload); } catch(e){}
+    }
+    function clearCachedBoard(){
+      try { localStorage.removeItem(LB_CACHE_KEY); } catch(e){}
+      try { if(window.__hugDurable) window.__hugDurable.remove(LB_CACHE_KEY); } catch(e){}
+    }
+    // Drop whatever is on screen: nothing is known any more. Used when the account changes
+    // (a board read for someone else must not stay up — least of all its "you" row) and by
+    // the honesty test to set up a board with nothing to show.
+    function forget(){ rows = []; answered = false; boardError = false; shownFor = null; render(open); }
+    // true once a leaderboard read has FAILED — kept separate from "rows is empty",
+    // which is a real answer. See render().
+    var boardError = false;
+    // The prototype's leaderboard (DEMO.board): you at #6 in a field of 260, eco points on the
+    // real 25-per-mug + 5-per-referral scale. Built only in prototype mode.
+    var DEMO_ROWS = isDemoMode() ? DEMO.board(260) : [];
     function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); }
     function render(full){
       if(!rows.length){
-        list.innerHTML = '<div class="leader-empty">refer a friend to climb the leaderboard</div>';
+        // A FAILED read is not an empty board. The old code set rows=[] on failure
+        // "so the board never looks broken/empty" — which is exactly backwards: it made
+        // a broken read look like a real, empty leaderboard.
+        if(boardError){
+          list.textContent = '';
+          var box = document.createElement('div'); box.className = 'load-error';
+          var msg = document.createElement('span'); msg.className = 'load-error-msg';
+          msg.textContent = 'couldn’t load the leaderboard';
+          box.appendChild(msg);
+          var btn = document.createElement('button');
+          btn.type = 'button'; btn.className = 'load-error-retry'; btn.textContent = 'retry';
+          ['pointerdown','touchstart','pointermove'].forEach(function(ev){
+            btn.addEventListener(ev, function(e){ e.stopPropagation(); });
+          });
+          btn.addEventListener('click', function(e){ e.stopPropagation(); load(); });
+          box.appendChild(btn);
+          list.appendChild(box);
+          return;
+        }
+        // Not answered yet: say nothing. "Refer a friend to climb" is the answer for a board
+        // that is really empty, and stating it before the read lands was a guess.
+        list.textContent = '';          // owner, 2026-10-10: no "refer a friend" line, empty or not
         return;
       }
       var n = full ? rows.length : Math.min(GLANCE, rows.length), html = '';
@@ -5321,32 +7082,65 @@
         var r = rows[i];
         html += '<div class="leader-row'+(r.me?' is-me':'')+'"><span>'+esc(r.label)+'</span><span>'+r.points+'</span></div>';
       }
-      // Not on the board yet → a gentle nudge under the standings (instead of hiding them).
-      if(!rows.some(function(r){ return r.me; })) html += '<div class="leader-empty leader-empty--footer">refer a friend to climb the leaderboard</div>';
       list.innerHTML = html;
     }
+    // The last board this device drew for the current identity, painted as the answer: the launch
+    // checklist ticks the board off here, and the network then only confirms it. False when
+    // there is nothing cached for this identity.
+    function paintFromCache(){
+      var cached = isDemoMode() ? null : loadCachedBoard();
+      if(!(cached && cached.length)) return false;
+      rows = cached; answered = true; boardError = false; shownFor = lbWho(); render(open); settled();
+      return true;
+    }
     function load(){
+      // Signed in or out since this board was drawn: it belongs to someone else now. Drop it,
+      // and paint the new identity's own last-known board if this device has one.
+      if(shownFor !== null && shownFor !== lbWho()) forget();
+      // Nothing on screen yet for this identity: the cached board, if any. On EVERY call, and
+      // ahead of the in-flight check: on a phone whose localStorage was evicted, the durable
+      // restore puts the cache back a few ms after this feature first drew — by which time the
+      // read below is already in flight, and the first version of this returned right here.
+      // The cover then waited on the network for the one part it did not need to.
+      if(!answered) paintFromCache();
       if(loading) return;
       // Prototype/demo mode: curated rankings, no backend call.
-      if(isDemoMode()){ rows = DEMO_ROWS.slice(); render(open); return; }
+      if(isDemoMode()){ rows = DEMO_ROWS.slice(); answered = true; render(open); settled(); return; }
       // Live build: the leaderboard is public (anon can read referral_leaderboard),
       // so it shows whether signed in or not.
-      if(!(window.HugBackend && window.HugBackend.enabled)){
-        rows = []; render(open); return;
+      // "No backend YET" is not "no backend". app.js runs before native-bridge.js, so this
+      // first call always saw no HugBackend and drew the empty-board line — the false
+      // "refer a friend to climb" a launch showed before the real rows arrived. Wait for the
+      // post-bridge call instead (below); only a bridge that says it is disabled is an answer.
+      if(!window.HugBackend) return;
+      if(!window.HugBackend.enabled){
+        rows = []; boardError = false; answered = true; render(open); settled(); return;
       }
       loading = true;
-      window.HugBackend.getLeaderboard().then(function(res){
-        rows = (res && res.ok && Array.isArray(res.rows))
-          ? res.rows.map(function(x){ return { label: x.label, points: Number(x.eco_points) || 0, me: !!x.is_me }; })
-          : [];
-        // Show the global top standings to EVERYONE (even a fresh 0-point account) so
-        // the board never looks broken/empty. A not-yet-ranked viewer still gets the
-        // "refer to climb" nudge under the list (see render()).
-        render(open);
-      }).catch(function(){ rows = []; render(open); }).then(function(){ loading = false; });
+      function failed(){
+        // A board already on screen for THIS account stays up over a failed refresh: it is
+        // last-known, not wrong — the same rule as the balance and the points hero. With
+        // nothing (or someone else's board) to show, the failure gets the error state, never
+        // the "refer a friend" line.
+        if(!(answered && rows.length && shownFor === lbWho())){ rows = []; boardError = true; answered = true; shownFor = lbWho(); render(open); }
+        settled();
+      }
+      fetchLeaderboardOnce().then(function(res){
+        if(!(res && res.ok && Array.isArray(res.rows))) return failed();
+        var next = res.rows.map(function(x){ return { label: x.label, points: boardTokens(x), me: !!x.is_me }; });
+        saveCachedBoard(next);
+        var same = answered && !boardError && JSON.stringify(next) === JSON.stringify(rows);
+        rows = next; boardError = false; answered = true; shownFor = lbWho();
+        // Show the global top standings to EVERYONE (even a fresh 0-point account).
+        // A not-yet-ranked viewer still gets the "refer to climb" nudge under the
+        // list (see render()) — but a FAILED read gets the error state, not that nudge.
+        if(!same) render(open);   // identical to what is showing: leave the DOM alone
+        settled();
+      }).catch(failed).then(function(){ loading = false; });
     }
-    window.__hugLeaderboard = { load: load };
-    render(open);
+    function settled(){ if(window.__hugBoot) window.__hugBoot.release('boot-leaderboard'); }
+    window.__hugLeaderboard = { load: load, forget: function(){ forget(); clearCachedBoard(); } };
+    if(!paintFromCache()) render(open);   // nothing cached: the (silent) empty board, see render()
 
     var head = document.createElement('div'); head.className = 'leader-head';
     titleEl.parentNode.insertBefore(head, titleEl); head.appendChild(titleEl);
@@ -5359,30 +7153,64 @@
       plus.addEventListener(ev, function(e){ e.stopPropagation(); });
     });
 
+    // The window's height never animates (styles.css, "The + expand is ONE motion"): it takes the
+    // open height in one step as the rail starts up, and on a close it HOLDS the open height until
+    // the rail has come home, then drops to the closed height. Both steps land below the screen's
+    // bottom edge, where the window ends in either state, so neither is seen.
+    var closeHold = 0;
+    var mover = listSlide(board.closest('.home-leader-rail'), content, 'leader-wa');   // the slide: listSlide, above History
+    function releaseCloseHold(){
+      clearTimeout(closeHold); closeHold = 0;
+      wrap.style.removeProperty('height');
+    }
     function setExpand(next){
       open = next;
+      var seq = mover.next();
+      // A close still sliding home: drop its hold first, or a quick re-open would keep it.
+      releaseCloseHold();
+      var heldHeight = open ? '' : getComputedStyle(wrap).height;   // read before render() changes the rows
+      // Draw the rows the new state calls for. Expanding only resized the window: render() was
+      // never re-run, so "show full leaderboard" kept showing the same ten. Invisible on today's
+      // live board (the RPC returns the top ten plus you); obvious on a board of 260.
+      render(open);
       if(open){
+        // Rows past the glance ten are laid out now, below the screen, not in the slide's first frame.
+        content.classList.add('leader-prep');
         var cR = content.getBoundingClientRect(), bR = board.getBoundingClientRect(), wR = wrap.getBoundingClientRect();
         var nav = screen.querySelector('.bottom-nav');
         var navTop = nav ? nav.getBoundingClientRect().top : cR.bottom;
-        var topInset = 6;
+        var topInset = 8;   // = the head band's reach above the head (styles.css --head-band-pad), so it is not clipped
         // Convert post-transform (scaled) rect distances back to design px so the
         // shift + window fill the space correctly on scaled screens (see history).
         var fit = window.__hugFit || 1;
         var shift = Math.max(0, (bR.top - cR.top) / fit - topInset);
-        var headH = Math.max(0, (wR.top - bR.top) / fit);
-        var winH = Math.max(160, (navTop - cR.top) / fit - topInset - headH - 10);
+        var headH = (wR.top - bR.top) / fit;   // negative once the window is pulled up under the head (styles.css --head-pull): the window then grows by that much
+        // A WHOLE number of px, like the closed fit (syncResponsiveScrollWindows floors it). With a
+        // fractional height (701.47) iOS placed the board's layer one whole pt lower than with the
+        // closed one, so it hopped 1 pt the moment the window changed size (simulator, 2026-10-16).
+        var winH = Math.round(Math.max(160, (navTop - cR.top) / fit - topInset - headH - 10));
         content.style.setProperty('--leader-shift', (-shift) + 'px');
         wrap.style.setProperty('--leader-window-height', winH + 'px');
-        content.classList.add('leader-open');
+        content.classList.add('leader-open');   // the fades, the + turning, all rows; the rail moves in mover.later
         plus.setAttribute('aria-label','Hide full leaderboard');
         try{ list.dispatchEvent(new Event('scroll')); }catch(e){}
+        mover.later(seq, function(){
+          if(!mover.run(mover.y(), -shift)) content.classList.add('leader-slid');
+        });
       } else {
-        content.classList.remove('leader-open');
+        if(heldHeight) wrap.style.height = heldHeight;
+        content.classList.remove('leader-open', 'leader-prep');
         content.style.removeProperty('--leader-shift');
         wrap.style.removeProperty('--leader-window-height');
         plus.setAttribute('aria-label','Show full leaderboard');
         try{ list.dispatchEvent(new Event('scroll')); }catch(e){}
+        mover.later(seq, function(){
+          if(!mover.run(mover.y(), 0, '')) content.classList.remove('leader-slid');
+          closeHold = setTimeout(function(){
+            releaseCloseHold();
+            try{ list.dispatchEvent(new Event('scroll')); }catch(e){}   // re-read the fade at the closed height
+          }, mover.releaseAt());
+        });
       }
     }
     plus.addEventListener('click', function(e){ e.stopPropagation(); setExpand(!open); });
@@ -5395,85 +7223,1254 @@
     list.addEventListener('pointerup', function(){ if(open && !tapMoved) setExpand(false); }, { passive: true });
 
     load();
-    window.addEventListener('load', load);   // re-fetch once native-bridge is ready (guests included)
+    // Re-read once native-bridge exists (guests included). NOT gated on
+    // readyState === 'loading': these scripts are deferred, so they run at "interactive"
+    // with DOMContentLoaded still ahead — that test would fire load() before the bridge
+    // exists and leave the board empty. Same mistake, same fix as whenBridgeReady above.
+    if (window.HugBackend) load();
+    else {
+      if (document.readyState !== 'complete') {
+        document.addEventListener('DOMContentLoaded', load, { once: true });
+      }
+      window.addEventListener('load', load, { once: true });
+    }
+  })();
+
+  // ---------------------------------------------------------------------------------------
+  // HOME IMPACT ROW — a two-panel carousel (people: water/food/sanitation, first since 2026-10-18;
+  // planet: plastic/carbon/tree). The finger drags the row itself; it is NOT a page swipe. Release past a
+  // threshold (or a flick) settles on the other panel, otherwise it snaps back. With two panels
+  // the carousel loops by construction: either direction leads to the other panel.
+  //
+  // Feel is lifted from the bag product carousel: axis lock at 8px / ratio 1.15, drag factor
+  // 0.9, commit at max(42, width*0.16) or a 0.45px/ms flick.
+  //
+  // The row is excluded from the page swipe in canGestureFromPoint AND here (pointerdown /
+  // touchstart / pointermove stop propagating), because #phone captures the pointer on
+  // pointerdown and would otherwise take the drag.
+  //
+  // Opening: on a cold launch the row shows people (the primary panel, owner 2026-10-18) for a
+  // beat, spins round the loop and slows to a
+  // halt on the panel chosen by HugGivingMath.landingPanel (motion: spinCurve/spinAt). A touch on
+  // the row cancels the spin. Returning from background after 30s+ re-picks the panel, no spin.
+  //
+  // Values API (for the rest of the app):
+  //   window.__hugImpactRow.set({ water: { value: "47", unit: "days", label: "47 days of safe water" } })
+  //   window.__hugImpactRow.show("people" | "planet" | 0 | 1 [, { instant: true }])
+  // ---------------------------------------------------------------------------------------
+  (function impactRow(){
+    var row = document.querySelector('[data-impact-row]');
+    if(!row) return;
+    var viewport = row.querySelector('.impact-viewport');
+    var panels = Array.prototype.slice.call(row.querySelectorAll('.impact-panel'));
+    var dots = row.querySelectorAll('.impact-dot');
+    if(!viewport || panels.length !== 2) return;
+
+    var LOCK_PX = 8, LOCK_RATIO = 1.15, DRAG_FACTOR = 0.9, SETTLE_MS = 460;
+    var COMMIT_MIN_PX = 42, COMMIT_FRACTION = 0.16, FLICK_PX_PER_MS = 0.45;
+    var EASE = 'cubic-bezier(.22,.82,.2,1)';
+    var reduceMq = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+    function reduced(){ return !!(reduceMq && reduceMq.matches); }
+
+    var current = 0;          // index of the panel in view
+    var animating = false;
+    var settleTimer = 0;
+    var drag = null;          // { id, x0, y0, locked, dx, samples:[[t,x]] }
+    var swallowClick = false;
+    var spinning = false, spinTimer = 0, spinRaf = 0, lastSpin = null;   // the opening spin (see openRow)
+    var spinWindow = null;   // { start, end } in performance.now() ms, once the spin really moves (tests read it)
+    var G = window.HugGivingMath;
+    var PANEL_KEY = 'hug-impact-panel-v1';   // { who, panel }: the panel last settled on, per account
+    var MIN_AWAY_MS = 30000;                 // away at least this long -> re-pick the panel on return
+    var hiddenAt = 0;
+
+    function now(){ return window.performance && performance.now ? performance.now() : Date.now(); }
+    function scale(){
+      var w = viewport.offsetWidth;
+      var r = viewport.getBoundingClientRect();
+      return w && r.width ? r.width / w : 1;       // the phone can be CSS-scaled to fit narrow screens
+    }
+    function width(){ return viewport.offsetWidth || 300; }
+    function setT(el, x, ms, ease){
+      el.style.transition = ms ? 'transform ' + ms + 'ms ' + (ease || EASE) : 'none';
+      el.style.transform = x ? 'translate3d(' + x + 'px,0,0)' : '';
+    }
+    function reveal(el){ el.removeAttribute('aria-hidden'); }
+    function conceal(el){ el.setAttribute('aria-hidden', 'true'); }
+    function setDots(i){
+      for(var k = 0; k < dots.length; k++) dots[k].classList.toggle('is-on', k === i);
+    }
+    function clearStyles(el){ el.style.transition = ''; el.style.transform = ''; el.style.opacity = ''; }
+    function finish(committed){
+      clearTimeout(settleTimer); settleTimer = 0;
+      if(committed) current = 1 - current;
+      clearStyles(panels[0]); clearStyles(panels[1]);
+      conceal(panels[1 - current]); reveal(panels[current]);
+      setDots(current);
+      animating = false;
+      if(!spinning){ persist(); if(pendingSet || pendingActive) setTimeout(flushPending, 0); }
+    }
+
+    // dir > 0: content heads right, the other panel enters from the left (and vice versa).
+    // ms / ease / done are for the opening spin; a normal slide takes SETTLE_MS and the house ease.
+    function slide(dir, ms, ease, done){
+      if(animating) return;
+      animating = true;
+      var cur = panels[current], oth = panels[1 - current];
+      reveal(oth);
+      setDots(1 - current);
+      if(reduced()){
+        cur.style.transition = oth.style.transition = 'none';
+        oth.style.opacity = '0';
+        void oth.offsetWidth;
+        cur.style.transition = oth.style.transition = 'opacity 180ms ease';
+        cur.style.opacity = '0'; oth.style.opacity = '1';
+        settleTimer = setTimeout(function(){ finish(true); if(done) done(); }, 220);
+        return;
+      }
+      var W = width(), dur = ms || SETTLE_MS;
+      setT(cur, 0, 0); setT(oth, -dir * W, 0);
+      void oth.offsetWidth;
+      setT(cur, dir * W, dur, ease); setT(oth, 0, dur, ease);
+      settleTimer = setTimeout(function(){ finish(true); if(done) done(); }, dur + (ms ? 16 : 40));
+    }
+    function settleFromDrag(dx, commit){
+      animating = true;
+      var cur = panels[current], oth = panels[1 - current];
+      var W = width();
+      var dir = dx >= 0 ? 1 : -1;
+      if(reduced()){
+        if(commit){ animating = false; slide(dir); } else { finish(false); }
+        return;
+      }
+      if(commit){
+        setDots(1 - current);
+        setT(cur, dir * W, SETTLE_MS); setT(oth, 0, SETTLE_MS);
+      } else {
+        setT(cur, 0, SETTLE_MS); setT(oth, -dir * W, SETTLE_MS);
+      }
+      settleTimer = setTimeout(function(){ finish(commit); }, SETTLE_MS + 40);
+    }
+
+    // ---- drag ---------------------------------------------------------------------------
+    function begin(id, x, y){
+      if(animating) return;
+      drag = { id: id, x0: x, y0: y, locked: false, dx: 0, samples: [[now(), x]] };
+    }
+    function move(x, y, e){
+      if(!drag) return;
+      var rawDx = x - drag.x0, rawDy = y - drag.y0;
+      if(!drag.locked){
+        var ax = Math.abs(rawDx), ay = Math.abs(rawDy);
+        if(ax < LOCK_PX && ay < LOCK_PX) return;
+        if(ax < ay * LOCK_RATIO){ drag = null; return; }       // vertical: not ours, ignored
+        drag.locked = true;
+        reveal(panels[1 - current]);
+        try { if(drag.id != null) row.setPointerCapture(drag.id); } catch(_) {}
+      }
+      if(e && e.cancelable) e.preventDefault();
+      drag.samples.push([now(), x]);
+      if(drag.samples.length > 6) drag.samples.shift();
+      var W = width();
+      var dx = (rawDx / scale()) * DRAG_FACTOR;
+      dx = Math.max(-W, Math.min(W, dx));
+      drag.dx = dx;
+      if(reduced()) return;                                    // no slide: decide on release
+      var base = dx > 0 ? -W : W;
+      setT(panels[current], dx, 0);
+      setT(panels[1 - current], base + dx, 0);
+    }
+    function end(cancelled){
+      if(!drag) return;
+      var d = drag; drag = null;
+      try { if(d.id != null) row.releasePointerCapture(d.id); } catch(_) {}
+      if(!d.locked) return;
+      swallowClick = true; setTimeout(function(){ swallowClick = false; }, 60);
+      var W = width();
+      var s0 = d.samples[0], s1 = d.samples[d.samples.length - 1];
+      var dt = Math.max(1, s1[0] - s0[0]);
+      var speed = Math.abs(s1[1] - s0[1]) / scale() / dt;
+      var dist = Math.abs(d.dx);
+      var commit = !cancelled && (dist >= Math.max(COMMIT_MIN_PX, W * COMMIT_FRACTION) || (speed > FLICK_PX_PER_MS && dist > 6));
+      settleFromDrag(d.dx, commit);
+    }
+
+    // The row must never reach the page swipe.
+    function stop(e){ e.stopPropagation(); }
+    row.addEventListener('pointerdown', function(e){
+      stop(e);
+      cancelSpin();
+      if(e.pointerType === 'mouse' && e.button !== 0) return;
+      begin(e.pointerId, e.clientX, e.clientY);
+    });
+    row.addEventListener('pointermove', function(e){
+      stop(e);
+      if(drag && e.pointerId === drag.id) move(e.clientX, e.clientY, e);
+    });
+    row.addEventListener('pointerup', function(e){ stop(e); if(drag && e.pointerId === drag.id) end(false); });
+    row.addEventListener('pointercancel', function(e){ stop(e); if(drag && e.pointerId === drag.id) end(true); });
+    // Touch fallback (no PointerEvent): same logic from touch events.
+    var touchOnly = !('PointerEvent' in window);
+    row.addEventListener('touchstart', function(e){
+      stop(e);
+      cancelSpin();
+      if(touchOnly){ var t = e.changedTouches[0]; begin(null, t.clientX, t.clientY); }
+    }, { passive: true });
+    row.addEventListener('touchmove', function(e){
+      stop(e);
+      if(touchOnly){ var t = e.changedTouches[0]; move(t.clientX, t.clientY, e); }
+    }, { passive: false });
+    row.addEventListener('touchend', function(e){ stop(e); if(touchOnly) end(false); }, { passive: true });
+    row.addEventListener('touchcancel', function(e){ stop(e); if(touchOnly) end(true); }, { passive: true });
+
+    // A drag that ends over the row must not also count as a tap on whatever sits under it.
+    row.addEventListener('click', function(e){
+      if(swallowClick){ e.preventDefault(); e.stopPropagation(); }
+    });
+
+    // ---- values -------------------------------------------------------------------------
+    function fitValue(el){
+      el.style.fontSize = '';
+      var item = el.parentNode;
+      var room = item && item.clientWidth;
+      if(!room || el.scrollWidth <= room) return;
+      var px = parseFloat(window.getComputedStyle(el).fontSize) || 23;
+      el.style.fontSize = Math.max(12, Math.floor(px * room / el.scrollWidth * 100) / 100 - 0.5) + 'px';
+    }
+    function setOne(id, entry){
+      var item = row.querySelector('[data-cause="' + id + '"]');
+      var el = item && item.querySelector('.impact-value');
+      if(!el) return;
+      var e = entry && typeof entry === 'object' ? entry : { value: entry };
+      // Unchanged figures are not rewritten. The values deferred by a spin are flushed the moment
+      // the row lands; rewriting identical text there re-rasterised the panel that had just come to
+      // rest, in the same frames as the halt.
+      var sig = JSON.stringify([e.value, e.unit, e.label]);
+      if(el.__hugSig === sig) return;
+      el.__hugSig = sig;
+      el.textContent = e.value == null || e.value === '' ? HUG_UNKNOWN : String(e.value);
+      // letter-spacing also trails the LAST character, so a bare number sits half that gap left of
+      // its icon; .no-unit puts the same gap on the left to centre it (a unit carries its own).
+      el.classList.toggle('no-unit', !e.unit);
+      if(e.unit){
+        var u = document.createElement('span');
+        u.className = 'impact-unit';
+        u.textContent = String(e.unit);
+        el.appendChild(u);
+      }
+      if(e.label) item.setAttribute('aria-label', String(e.label));
+      else item.removeAttribute('aria-label');
+      fitValue(el);
+    }
+    // New figures or a new cause list that arrive mid-spin wait for it to land: rewriting text
+    // inside a panel the compositor is moving forces it to re-render that layer, which cost a
+    // visible hitch on the iOS simulator (frame 51 of the spin, 2026-10-10). Last one wins.
+    var pendingSet = null, pendingActive = null;
+    function flushPending(){
+      if(spinning) return;
+      var a = pendingActive, m = pendingSet;
+      pendingActive = pendingSet = null;
+      if(a) setActive(a);
+      if(m) set(m);
+    }
+    function set(map){
+      if(!map) return;
+      if(spinning){ pendingSet = Object.assign(pendingSet || {}, map); return; }
+      Object.keys(map).forEach(function(id){ setOne(id, map[id]); });
+    }
+    function show(panel, opts){
+      var idx = typeof panel === 'number' ? panel : idxOf(panel);
+      if(idx !== 0 && idx !== 1) return;
+      if(spinning){ haltSpin(); finish(false); }
+      if(idx === current) return;
+      if(animating) finish(false);
+      if(opts && opts.instant){ current = idx; finish(false); return; }
+      slide(idx === 1 ? -1 : 1);       // the second panel (planet) arrives from the right, the first from the left
+    }
+    // SPEC §1.4: show only the ACTIVE causes, in sort order. ids = active cause ids in display
+    // order. Items not in the markup are ignored; items not listed are hidden (no space, no
+    // a11y, and the motion gate skips them). Idempotent: nothing is touched when nothing changed.
+    function setActive(ids){
+      if(!Array.isArray(ids) || !ids.length) return;
+      if(spinning){ pendingActive = ids.slice(); return; }
+      panels.forEach(function(p){
+        var items = Array.prototype.slice.call(p.querySelectorAll('[data-cause]'));
+        items.forEach(function(it){
+          var on = ids.indexOf(it.getAttribute('data-cause')) !== -1;
+          if(it.hidden === !on) return;
+          it.hidden = !on;
+          if(on) it.removeAttribute('aria-hidden'); else it.setAttribute('aria-hidden', 'true');
+        });
+        var shown = items.filter(function(it){ return !it.hidden; })
+          .sort(function(a, b){ return ids.indexOf(a.getAttribute('data-cause')) - ids.indexOf(b.getAttribute('data-cause')); });
+        var cur = Array.prototype.slice.call(p.querySelectorAll('[data-cause]')).filter(function(it){ return !it.hidden; });
+        if(shown.some(function(it, i){ return it !== cur[i]; })) shown.forEach(function(it){ p.appendChild(it); });
+      });
+      Array.prototype.forEach.call(row.querySelectorAll('.impact-value'), fitValue);
+    }
+    // ---- which panel, and the opening spin ------------------------------------------------
+    // Where the row settles: the panel holding more of the giving when the cause choice is not
+    // all-on, else people, the primary panel (owner, 2026-10-18). The pure rule is
+    // HugGivingMath.landingPanel; this only feeds it. The panel last viewed is still kept (per
+    // account, durable: iOS evicts localStorage) and passed in, but it no longer decides.
+    function who(){ try { return String(localStorage.getItem('hug-account-email-v1') || '').trim().toLowerCase(); } catch(e){ return ''; } }
+    function lastViewed(){
+      try {
+        var v = JSON.parse(localStorage.getItem(PANEL_KEY) || 'null');
+        if(v && String(v.who || '') === who() && (v.panel === 'planet' || v.panel === 'people')) return v.panel;
+      } catch(e){}
+      return null;
+    }
+    function persist(){
+      var panel = panelName(current);
+      if(lastViewed() === panel) return;
+      var raw = JSON.stringify({ who: who(), panel: panel });
+      try { localStorage.setItem(PANEL_KEY, raw); } catch(e){}
+      try { if(window.__hugDurable) window.__hugDurable.set(PANEL_KEY, raw); } catch(e){}
+    }
+    function target(){
+      var last = lastViewed(), g = window.__hugGiving;
+      if(g && g.landing) { try { return g.landing(last); } catch(e){} }
+      return 'people';
+    }
+    // Which panel is which comes from the markup (data-panel), not from the order: people is the
+    // first (left, first dot) since 2026-10-18 (owner: "make the people 3 icons ... the highlight
+    // on the left").
+    function panelName(i){ return (panels[i] && panels[i].getAttribute('data-panel')) || 'people'; }
+    function idxOf(name){ return panelName(1) === name ? 1 : 0; }
+    function whenOnHome(){
+      var home = document.querySelector('.screen[data-screen="home"]');
+      return document.visibilityState === 'visible' && (!home || home.classList.contains('active'));
+    }
+    // A touch on the row ends the spin: freeze it where it is and settle on the nearer panel, so
+    // the next drag starts from rest. (Cancelling is a settle, not a jump to the target.)
+    var spinAnims = null;     // the running spin, one Web Animation per panel (see spin)
+    var calmRaf = 0;          // waiting for the page to be calm before the spin starts
+    function haltSpin(){
+      spinning = false;
+      clearTimeout(spinTimer); spinTimer = 0;
+      if(spinRaf && window.cancelAnimationFrame) cancelAnimationFrame(spinRaf);
+      if(calmRaf && window.cancelAnimationFrame) cancelAnimationFrame(calmRaf);
+      spinRaf = calmRaf = 0;
+    }
+    // Start the spin only once the page is calm: after `minMs`, as soon as 8 frames in a row have
+    // arrived on time, or at `maxMs` regardless. Measured on the iOS simulator: the first launch
+    // after an install spun while start-up work was still running and stuttered for its first
+    // half second; warm launches were already smooth, and here they start with no extra wait.
+    function whenCalm(minMs, maxMs, fn){
+      var t0 = 0, last = 0, calm = 0;
+      function tick(ts){
+        if(!spinning) return;
+        if(!t0) t0 = ts;
+        calm = last && ts - last <= 20 ? calm + 1 : 0;
+        last = ts;
+        if((ts - t0 >= minMs && calm >= 8) || ts - t0 >= maxMs){ calmRaf = 0; fn(); return; }
+        calmRaf = requestAnimationFrame(tick);
+      }
+      calmRaf = requestAnimationFrame(tick);
+    }
+    function dropSpinAnims(){
+      if(!spinAnims) return;
+      spinAnims.forEach(function(a){ try { a.cancel(); } catch(e){} });
+      spinAnims = null;
+    }
+    function cancelSpin(){
+      if(!spinning) return;
+      var moving = !!spinRaf || !!spinAnims;
+      var W = width();
+      function tx(el){
+        try { return new DOMMatrix(window.getComputedStyle(el).transform).m41; } catch(e){ return 0; }
+      }
+      var x0 = tx(panels[0]), x1 = tx(panels[1]);       // read BEFORE letting go of the animation
+      haltSpin();
+      clearTimeout(settleTimer); settleTimer = 0;
+      if(!moving){ dropSpinAnims(); finish(false); return; }   // opening beat: put the parked panel away
+      current = (x0 <= 0.5 && x0 > -W + 0.5) ? 0 : 1;   // the leader: on screen and leaving left
+      var cur = panels[current], oth = panels[1 - current];
+      var xc = current === 0 ? x0 : x1, xo = current === 0 ? x1 : x0;
+      setT(cur, xc, 0); setT(oth, xo, 0);               // hold them exactly here …
+      dropSpinAnims();                                  // … then drop the animation underneath
+      void cur.offsetWidth;
+      var commit = Math.abs(xc) > W / 2;
+      animating = true;
+      if(commit){ setT(cur, (xc < 0 ? -1 : 1) * W, 180); setT(oth, 0, 180); setDots(1 - current); }
+      else { setT(cur, 0, 180); setT(oth, (xo < 0 ? -1 : 1) * W, 180); }
+      settleTimer = setTimeout(function(){ finish(commit); }, 200);
+    }
+    // The spin's path for one panel as Web Animation keyframes. The path itself is pure maths
+    // (HugGivingMath.spinPath, pinned by scripts/giving-math-test.mjs): it is where the halt's
+    // ghost flash lived — the outgoing panel swept across the row in the spin's last 8 ms.
+    function spinKeyframes(curve, shift, W){
+      return G.spinPath(curve, shift, W).map(function(k){
+        return { offset: k.offset, transform: 'translate3d(' + k.x + 'px,0,0)' };
+      });
+    }
+    // One continuous movement. It runs on the COMPOSITOR (Web Animations), not on the page's own
+    // thread: measured on the iOS simulator, the old frame-by-frame version showed the same picture
+    // for up to 5 frames in a row and then jumped ~55 pt whenever start-up work held the thread —
+    // the owner's "harsh and jittery". A compositor animation keeps moving regardless.
+    // `current` is the panel leaving to the left; the other follows one width behind.
+    function spin(toIdx){
+      var curve = G.spinCurve(panelName(current), panelName(toIdx));
+      var c0 = current, t0 = 0, dot = -1;
+      lastSpin = curve;
+      spinning = true;
+      if(panels[0].animate){
+        // Reveal the incoming panel now, parked off screen at +W, so it is painted and on its own
+        // layer before the first frame of motion (doing it on that frame cost the spin's first
+        // few frames on the simulator).
+        animating = true;
+        reveal(panels[1 - c0]);
+        setT(panels[c0], 0, 0); setT(panels[1 - c0], width(), 0);
+        whenCalm(curve.holdMs, curve.holdMs + 1200, function(){
+          if(!spinning) return;
+          try { var s0 = performance.now(); spinWindow = { start: s0, end: s0 + curve.totalMs }; } catch(e){}
+          var W = width();
+          var opts = { duration: curve.totalMs, fill: 'forwards' };
+          spinAnims = [panels[c0].animate(spinKeyframes(curve, 0, W), opts),
+                       panels[1 - c0].animate(spinKeyframes(curve, 1, W), opts)];
+          var a0 = spinAnims[0];
+          // The dots (cheap, page thread; a late dot is harmless) follow the animation's own clock.
+          (function dots(){
+            if(!spinning || !spinAnims) return;
+            var p = G.spinAt(curve, Number(a0.currentTime) || 0).p, k = Math.floor(p);
+            var lead = (c0 + k) % 2, d = (p - k) < 0.5 ? lead : 1 - lead;
+            if(d !== dot){ dot = d; setDots(d); }
+            spinRaf = requestAnimationFrame(dots);
+          })();
+          a0.onfinish = function(){
+            if(!spinning || !spinAnims) return;
+            haltSpin();
+            current = (c0 + curve.passes) % 2;
+            finish(false);              // clears the inline transforms, hides the other panel, persists
+            dropSpinAnims();            // same task: no frame between the held end and the clean state
+          };
+        });
+        return;
+      }
+      // Fallback (no Web Animations): the same curve, drawn frame by frame.
+      function frame(ts){
+        if(!spinning) return;
+        if(!t0) t0 = ts;
+        var t = ts - t0;
+        if(t >= curve.totalMs){
+          spinRaf = 0; spinning = false;
+          current = (c0 + curve.passes) % 2;
+          finish(false);                  // clears the transforms, hides the other panel, persists
+          return;
+        }
+        var p = G.spinAt(curve, t).p, k = Math.floor(p), f = p - k, W = width();
+        current = (c0 + k) % 2;
+        setT(panels[current], f ? -f * W : 0, 0);
+        setT(panels[1 - current], (1 - f) * W, 0);
+        var d = f < 0.5 ? current : 1 - current;
+        if(d !== dot){ dot = d; setDots(d); }
+        spinRaf = requestAnimationFrame(frame);
+      }
+      spinTimer = setTimeout(function(){
+        if(!spinning) return;
+        spinTimer = 0;
+        animating = true;
+        reveal(panels[1 - current]);
+        setT(panels[1 - current], width(), 0);
+        spinRaf = requestAnimationFrame(frame);
+      }, curve.holdMs);
+    }
+    // Cold launch: people shows for a beat, then the row runs around the loop and slows to a
+    // halt on the target. Reduced motion, or a launch that lands on another screen: no spin, the
+    // target is shown directly. The target is read when the launch cover lifts, from what the
+    // device already knows (cached choice); a later server answer does not move the row.
+    function openRow(){
+      if(!G || !G.spinCurve || !G.spinPath || !window.requestAnimationFrame || reduced() || !whenOnHome() || drag){ show(idxOf(target()), { instant: true }); return; }
+      spin(idxOf(target()));
+    }
+    // Back from the background after a real absence: pick the panel again, without the spin.
+    function settleToTarget(){
+      haltSpin();
+      if(animating) finish(false);     // a spin or settle in flight: snap clean first
+      if(drag) return;
+      show(idxOf(target()), { instant: true });
+    }
+    function away(){ if(!hiddenAt) hiddenAt = Date.now(); }
+    function back(){
+      var t0 = hiddenAt; hiddenAt = 0;
+      if(t0 && Date.now() - t0 >= MIN_AWAY_MS) settleToTarget();
+    }
+    document.addEventListener('visibilitychange', function(){
+      if(document.visibilityState === 'hidden') away(); else back();
+    });
+    window.addEventListener('load', function(){
+      try {
+        var A = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
+        if(A && A.addListener) A.addListener('appStateChange', function(st){ if(st && st.isActive) back(); else away(); });
+      } catch(e){}
+    }, { once: true });
+    // People is the primary panel (owner, 2026-10-18), and now the first in the markup, so the row
+    // is on it from the first frame: the spin's opening beat shows people, as does a no-spin launch.
+    show('people', { instant: true });
+    if(window.__hugBoot && window.__hugBoot.onReveal) window.__hugBoot.onReveal(openRow);
+    else openRow();
+
+    window.__hugImpactRow = {
+      set: set,
+      setActive: setActive,
+      show: show,
+      landing: target,                  // where the row would settle right now (tests read this)
+      lastViewed: lastViewed,
+      settleToTarget: settleToTarget,   // what a return from background does
+      get lastSpin(){ return lastSpin; },
+      get spinWindow(){ return spinWindow; },
+      get spinning(){ return spinning; },
+      get panel(){ return panelName(current); }
+    };
+    window.addEventListener('resize', function(){
+      Array.prototype.forEach.call(row.querySelectorAll('.impact-value'), fitValue);
+    });
+  })();
+
+  /* HUG GIVING — tokens, six causes, where your tokens go (docs/giving/SPEC.md).
+     One feature owns the data; the home row, the impact screen and the settings screen read it.
+       · giving_overview()  public facts (causes, token value) — cached, falls back to the SPEC
+                            defaults in giving-math.js so a signed-out launch needs no network
+       · my_giving()        this account's tokens + split — the server's answer, cached per account
+       · set_giving_causes  the choice. Optimistic; the server's reply replaces the guess.
+     A read that FAILED is never drawn as zeros: it is an unknown (HUG_UNKNOWN) and says so. */
+  (function givingFeature(){
+    var G = window.HugGivingMath;
+    if(!G) return;
+    var CHOICE_KEY = 'hug-giving-choice-v1';   // prototype mode only: a local choice, never sent
+    var META = {
+      // Small-size variants, one per cause, matched for size and line weight (all 22 px of ink in
+      // a 26-unit box, ~0.52 px stroke at 26 px; owner, 2026-10-10: "the weighting should be all
+      // the same in this area"). Built from the owner's art; src/assets/giving/.
+      plastic:    { name: 'ocean plastic', icon: 'assets/giving/plastic.svg' },
+      carbon:     { name: 'carbon', icon: 'assets/giving/carbon.svg' },
+      tree:       { name: 'trees', icon: 'assets/giving/tree.svg' },
+      water:      { name: 'clean water', icon: 'assets/giving/water.svg' },
+      food:       { name: 'school meals', icon: 'assets/giving/food.svg' },
+      vitamin_a:  { name: 'child health', icon: 'assets/icon-health.svg' },
+      sanitation: { name: 'sanitation', icon: 'assets/giving/sanitation.svg' }
+    };
+    var PANEL_TITLE = { planet: 'Planet', people: 'People' };
+    var ROW_KEYS = ['plastic','carbon','tree','water','food','vitamin_a','sanitation'];
+    var overview = null;     // giving_overview() payload (cached or fresh), else null = SPEC defaults
+    var mine = null;         // my_giving() payload for the signed-in account, else null
+    var mineFailed = false;  // the last my_giving() read failed and nothing has succeeded since
+    var seq = 0;             // set_giving_causes calls issued; only the newest reply is applied
+    var listeners = [];
+
+    function active(){ return document.documentElement.dataset.accountStatus === 'active'; }
+    function who(){ try { return String(localStorage.getItem('hug-account-email-v1') || '').trim().toLowerCase(); } catch(e){ return ''; } }
+    function readJson(key){ try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch(e){ return null; } }
+    function durable(op, key, val){ try { if(window.__hugDurable) window.__hugDurable[op](key, val); } catch(e){} }
+
+    function config(){ return overview || { token_value_pence: G.DEFAULT_CONFIG.token_value_pence, per_cup_pence: G.DEFAULT_CONFIG.per_cup_pence, per_referral_tokens: G.DEFAULT_CONFIG.per_referral_tokens }; }
+    // Active causes only (SPEC §1.4), People first, then Planet. No overview yet -> the SPEC defaults.
+    function causes(){ return G.inDisplayOrder((overview && overview.causes) || G.DEFAULT_CAUSES); }
+    function localChoice(){ var c = readJson(CHOICE_KEY); return Array.isArray(c) ? c : null; }
+
+    // The enabled set the screens should use right now. Signed in: the server's. Prototype: the
+    // local choice. Signed out: everything (nobody has chosen anything).
+    // Signed out, the switches still work as a PREVIEW (owner, 2026-10-10: turn one off and the
+    // others' amounts update at once). Held in memory only: never sent, never stored.
+    var preview = null;
+    function enabledIds(){
+      if(isDemoMode()) return G.resolveEnabled(causes(), localChoice()).enabled;
+      if(active() && mine && Array.isArray(mine.enabled)) return G.resolveEnabled(causes(), mine.enabled).enabled;
+      return G.resolveEnabled(causes(), active() ? null : preview).enabled;
+    }
+    function coreCounts(){
+      if(isDemoMode()) return { cups: (DEMO.linkedCodes || []).length, referrals: (window.__hugReferral && window.__hugReferral.count) || DEMO.referrals };
+      if(active() && mine) return { cups: Number(mine.cups) || 0, referrals: Number(mine.referrals) || 0 };
+      return { cups: 0, referrals: 0 };
+    }
+    // One hug (or n) under the current choice.
+    function perCup(n){ return G.compute({ causes: causes(), config: config(), cups: n == null ? 1 : n, referrals: 0, enabled: enabledIds() }); }
+    // Everything given so far. null = signed in but not known (never zeros).
+    function soFar(){
+      if(isDemoMode()){ var c = coreCounts(); return G.compute({ causes: causes(), config: config(), cups: c.cups, referrals: c.referrals, enabled: enabledIds() }); }
+      if(!active()) return G.compute({ causes: causes(), config: config(), cups: 0, referrals: 0, enabled: null });
+      if(!mine) return null;
+      // Server figures verbatim; the cause list order/labels come from the overview.
+      var byId = {}; (mine.per_cause || []).forEach(function(p){ byId[p.id] = p; });
+      return { tokens: Number(mine.tokens) || 0, enabled: enabledIds(), allEnabled: mine.all_enabled === true,
+        perCause: causes().map(function(c){ var p = byId[c.id] || {}; return { id: c.id, share: Number(p.share) || 0, pence: Number(p.pence) || 0,
+          tokens: Number(p.tokens) || 0, outcome: p.outcome == null ? null : Number(p.outcome), display: p.display || c.display }; }) };
+    }
+    function causeById(id){ var l = causes(); for(var i=0;i<l.length;i++) if(l[i].id === id) return l[i]; return { id: id, panel: 'planet', partner_name: '', display: 'units' }; }
+
+    // How an outcome reads. value/unit feed the home row; text is the full phrase. The row shows
+    // a unit only where the number is not self-explanatory (kg); trees, meals and toilets are the
+    // icon's job, and days went once a tap on the icon explains it (owner, 2026-10-10), so their
+    // unit is '' (the full phrase stays as the item's aria-label).
+    function phrase(id, row){
+      if(!row || (row.display === 'money')) {
+        var p = G.formatPence(row ? row.pence : 0);
+        return { value: p, unit: '', text: p, short: p, approx: false };
+      }
+      if(row.display === 'percent'){
+        var pp = G.formatPercentParts(row.outcome || 0);
+        if(pp.isPercent) return { value: pp.value, unit: '', text: hugTpl('{n} of a family toilet', { n: pp.value }), short: hugTpl('{n} of a family toilet', { n: pp.value }), approx: true };
+        var oneT = pp.value === '1';
+        return { value: pp.value, unit: '', text: hugTpl(oneT ? '{n} family toilet' : '{n} family toilets', { n: pp.value }), short: hugTpl(oneT ? '{n} family toilet' : '{n} family toilets', { n: pp.value }), approx: true };
+      }
+      var v = G.formatUnits(row.outcome || 0), one = v === '1';
+      switch(id){
+        case 'plastic': return { value: v, unit: hugTpl('kg'), text: hugTpl('{n} kg of ocean plastic collected', { n: v }), short: hugTpl('{n} kg', { n: v }), approx: true };
+        case 'carbon':  return { value: v, unit: hugTpl('kg'), text: hugTpl('{n} kg CO₂e offset', { n: v }), short: hugTpl('{n} kg', { n: v }), approx: true };
+        case 'tree':    return { value: v, unit: '', text: hugTpl(one ? '{n} tree planted' : '{n} trees planted', { n: v }), short: hugTpl(one ? '{n} tree' : '{n} trees', { n: v }), approx: true };
+        case 'water':   return { value: v, unit: '', text: hugTpl('{n} days of safe water', { n: v }), short: hugTpl('{n} days', { n: v }), approx: true };
+        case 'vitamin_a': return { value: v, unit: '', text: hugTpl('{n} days of vitamin A for a child', { n: v }), short: hugTpl('{n} days', { n: v }), approx: true };
+        case 'food':    return { value: v, unit: '', text: hugTpl(one ? '{n} school meal' : '{n} school meals', { n: v }), short: hugTpl(one ? '{n} meal' : '{n} meals', { n: v }), approx: true };
+        default:        return { value: v, unit: '', text: v, short: v, approx: true };
+      }
+    }
+
+    function el(tag, cls, text){ var e = document.createElement(tag); if(cls) e.className = cls; if(text != null) e.textContent = text; return e; }
+    function icon(id, cls){
+      var img = el('img', cls); img.alt = ''; img.src = (META[id] || {}).icon || ''; img.setAttribute('decoding', 'async');
+      if(id === 'carbon') img.classList.add('is-tall');   // the factory stands taller, as on home (giving/carbon.svg)
+      return img;
+    }
+
+    // ---- shared renderers -----------------------------------------------------------------
+    // A grouped (Planet / People) list of outcome cards. calc = a G.compute() result, or null
+    // for "not known", which draws dashes and says so rather than zeros.
+    function renderOutcomes(host, calc){
+      if(!host) return;
+      host.textContent = '';
+      var panel = null;
+      causes().forEach(function(c){
+        if(c.panel !== panel){ panel = c.panel; host.appendChild(el('p', 'giving-panel-title', hugTpl(PANEL_TITLE[panel] || panel))); }
+        var row = calc && calc.perCause.filter(function(p){ return p.id === c.id; })[0];
+        var item = el('div', 'giving-item');
+        if(calc && row && calc.enabled.indexOf(c.id) === -1) item.classList.add('is-off');
+        item.appendChild(icon(c.id));
+        var main = el('div', 'giving-item-main');
+        var off = !!(calc && row && calc.enabled.indexOf(c.id) === -1);
+        var ph = row && !off ? phrase(c.id, row) : null;
+        main.appendChild(el('span', 'giving-item-out', off ? hugTpl('switched off') : (ph ? (ph.approx ? '≈ ' : '') + ph.text : HUG_UNKNOWN)));
+        if(c.partner_name){
+          var site = partnerSite(c.id);
+          main.appendChild(site ? partnerLink(c.partner_name, site, 'giving-item-partner') : el('span', 'giving-item-partner', c.partner_name));
+        }
+        item.appendChild(main);
+        host.appendChild(item);
+      });
+    }
+
+    // ---- home row ---------------------------------------------------------------------------
+    // C1's row exposes window.__hugImpactRow.set({ [causeId]: { value, unit?, label? } }).
+    function feedRow(){
+      var row = window.__hugImpactRow;
+      if(!row || typeof row.set !== 'function') return;
+      // The account's own totals, like the TOKENS hero under it (owner, 2026-10-10: the home page
+      // is "the totality" of what this person has given). Signed out that is nothing yet: zeros.
+      // What one hug o gives lives on the giving and impact screens, and in each icon's story.
+      var calc = soFar();
+      var out = {};
+      var ids = causes().map(function(c){ return c.id; });
+      if(typeof row.setActive === 'function') try { row.setActive(ids); } catch(e){}
+      ROW_KEYS.forEach(function(id){
+        if(ids.indexOf(id) === -1) return;   // switched off by the owner: not on the row
+        var p = calc && calc.perCause.filter(function(x){ return x.id === id; })[0];
+        if(!p){ out[id] = { value: HUG_UNKNOWN, label: HUG_UNKNOWN }; return; }
+        if(calc.enabled.indexOf(id) === -1){ out[id] = { value: hugTpl('off'), label: hugTpl('{cause} is switched off', { cause: hugTpl(META[id] ? META[id].name : id) }) }; return; }
+        var ph = phrase(id, p);
+        out[id] = { value: ph.value, unit: ph.unit, label: (ph.approx ? '≈ ' : '') + ph.text };
+      });
+      try { row.set(out); } catch(e){}
+    }
+
+    // ---- settings: where your tokens go -------------------------------------------------------
+    var screen = document.querySelector('.screen[data-screen="giving"]');
+    var listEl = document.getElementById('giving-list');
+    var msgEl = document.getElementById('giving-msg');
+    var signinEl = document.getElementById('giving-signin');
+    function say(text, isError){ if(!msgEl) return; msgEl.textContent = text ? hugTpl(text) : ''; msgEl.classList.toggle('is-error', !!isError); }
+
+    // The rows are built once and then updated IN PLACE, so a switch slides, a row dims, and the
+    // amounts count to their new values (owner, 2026-10-10: "a smoother transition and not so
+    // immediate"). Rebuilding the list on every tap made all of it snap.
+    var COUNT_MS = 450;
+    function rowShare(c, p, on){
+      if(!on || !p) return hugTpl('off');
+      var ph = phrase(c.id, p);
+      return (ph.approx ? '≈ ' : '') + ph.short;
+    }
+    function countTo(span, c, from, to, p){
+      if(span._count) cancelAnimationFrame(span._count);
+      var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if(reduce || !isFinite(from) || !isFinite(to) || from === to){ span.textContent = rowShare(c, p, true); span._outcome = to; return; }
+      var t0 = 0;
+      function frame(ts){
+        if(!t0) t0 = ts;
+        var u = Math.min(1, (ts - t0) / COUNT_MS), e = u < .5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2;
+        var v = from + (to - from) * e;
+        span.textContent = rowShare(c, { id: p.id, outcome: v, pence: p.pence, display: p.display }, true);
+        span._outcome = v;
+        span._count = u < 1 ? requestAnimationFrame(frame) : 0;
+      }
+      span._count = requestAnimationFrame(frame);
+    }
+    function renderSettings(){
+      if(!listEl) return;
+      var signedOut = !isDemoMode() && !active();
+      var unknown = !isDemoMode() && active() && !mine;
+      if(signinEl) signinEl.hidden = !signedOut;
+      var en = enabledIds(), calc = perCup(1), list = causes();
+      var rows = Array.prototype.slice.call(listEl.querySelectorAll('.giving-row'));
+      var same = rows.length === list.length && rows.every(function(r, i){ return r.dataset.cause === list[i].id; });
+      if(!same){
+        listEl.textContent = '';
+        var panel = null;
+        list.forEach(function(c){
+          if(c.panel !== panel){ panel = c.panel; listEl.appendChild(el('p', 'giving-panel-title', hugTpl(PANEL_TITLE[panel] || panel))); }
+          var row = el('button', 'giving-row');
+          row.type = 'button'; row.setAttribute('role', 'switch');
+          row.dataset.cause = c.id;
+          row.appendChild(icon(c.id, 'giving-icon'));
+          var text = el('span', 'giving-text');
+          text.appendChild(el('span', 'giving-name', hugTpl((META[c.id] || {}).name || c.id)));
+          if(c.partner_name) text.appendChild(el('span', 'giving-partner', c.partner_name));
+          text.appendChild(el('span', 'giving-share', ''));
+          row.appendChild(text);
+          var sw = el('span', 'giving-switch'); sw.setAttribute('aria-hidden', 'true'); sw.appendChild(el('span', 'giving-knob'));
+          row.appendChild(sw);
+          listEl.appendChild(row);
+        });
+        rows = Array.prototype.slice.call(listEl.querySelectorAll('.giving-row'));
+      }
+      list.forEach(function(c, i){
+        var row = rows[i], on = en.indexOf(c.id) !== -1, last = on && en.length === 1;
+        row.classList.toggle('is-on', on);
+        row.classList.toggle('is-last', last);
+        row.setAttribute('aria-checked', on ? 'true' : 'false');
+        if(last || unknown) row.setAttribute('aria-disabled', 'true'); else row.removeAttribute('aria-disabled');
+        var p = calc.perCause.filter(function(x){ return x.id === c.id; })[0];
+        var span = row.querySelector('.giving-share');
+        if(!on || !p){
+          if(span._count) cancelAnimationFrame(span._count);
+          span._count = 0; span._outcome = 0;
+          span.textContent = rowShare(c, p, false);
+          return;
+        }
+        var to = Number(p.outcome);
+        // First paint: straight to the value. After that: count from what is showing now.
+        if(!same || span._outcome == null) { span.textContent = rowShare(c, p, true); span._outcome = to; }
+        else countTo(span, c, Number(span._outcome), to, p);
+      });
+    }
+    function applyChoice(ids){
+      // ids = the new enabled set (already non-empty).
+      if(isDemoMode()){
+        // Prototype mode is display-only: keep the choice on this device, send nothing.
+        var all = causes().map(function(c){ return c.id; });
+        var store = ids.length === all.length ? null : ids;
+        try { if(store) localStorage.setItem(CHOICE_KEY, JSON.stringify(store)); else localStorage.removeItem(CHOICE_KEY); } catch(e){}
+        changed(); say('');
+        return;
+      }
+      if(!active()){
+        var allIds = causes().map(function(c){ return c.id; });
+        preview = ids.length === allIds.length ? null : ids.slice();
+        changed(); say('Sign in to keep this choice.');
+        return;
+      }
+      if(!mine || !window.HugBackend || !window.HugBackend.setGivingCauses) return;
+      var before = mine, mySeq = ++seq;
+      // Optimistic: the server's formula, run here on the counts it last told us.
+      var guess = G.compute({ causes: causes(), config: config(), cups: before.cups, referrals: before.referrals, enabled: ids });
+      mine = { cups: before.cups, referrals: before.referrals, tokens: before.tokens, tokens_from_cups: before.tokens_from_cups,
+        tokens_from_referrals: before.tokens_from_referrals, pence: before.pence, enabled: guess.enabled, all_enabled: guess.allEnabled,
+        per_cause: guess.perCause.map(function(p){ return { id: p.id, share: p.share, pence: p.pence, tokens: p.tokens, outcome: p.outcome, display: p.display }; }) };
+      changed(); say('Saving…');
+      window.HugBackend.setGivingCauses(ids).then(function(res){
+        if(mySeq !== seq) return;   // a newer choice is already in flight; its reply decides
+        if(res && res.ok && res.giving){ mine = res.giving; mineFailed = false; saveMine(); changed(); say('Saved.'); return; }
+        mine = before; changed();
+        say(res && res.status === 'empty' ? 'Keep at least one cause on — your tokens need somewhere to go.' : 'Couldn’t save that. Check your connection and try again.', true);
+      }).catch(function(){
+        if(mySeq !== seq) return;
+        mine = before; changed(); say('Couldn’t save that. Check your connection and try again.', true);
+      });
+    }
+    function signIn(){ if(window.__hugAuth) window.__hugAuth.open('signin'); }
+    if(listEl) listEl.addEventListener('click', function(e){
+      var row = e.target.closest && e.target.closest('.giving-row');
+      if(!row) return;
+      if(!isDemoMode() && active() && !mine){ say('Couldn’t load your choices yet. Go back and open this again.', true); load(); return; }
+      var id = row.dataset.cause, en = enabledIds().slice(), i = en.indexOf(id);
+      if(i === -1){
+        // keep the display order
+        applyChoice(causes().map(function(c){ return c.id; }).filter(function(x){ return x === id || en.indexOf(x) !== -1; }));
+      } else if(en.length === 1){
+        say('Keep at least one cause on — your tokens need somewhere to go.', true);
+      } else {
+        en.splice(i, 1); applyChoice(en);
+      }
+    });
+    var siBtn = document.getElementById('giving-signin-btn');
+    if(siBtn) siBtn.addEventListener('click', signIn);
+
+    // ---- data -------------------------------------------------------------------------------
+    function saveMine(){
+      if(!mine) return;
+      var payload = JSON.stringify({ who: who(), giving: mine });
+      try { localStorage.setItem(HUG_GIVING_MINE_KEY, payload); } catch(e){}
+      durable('set', HUG_GIVING_MINE_KEY, payload);
+    }
+    function loadCached(){
+      var o = readJson(HUG_GIVING_OVERVIEW_KEY);
+      if(o && Array.isArray(o.causes) && o.causes.length) overview = o;
+      var m = readJson(HUG_GIVING_MINE_KEY);
+      if(m && m.giving && Array.isArray(m.giving.per_cause) && String(m.who || '') === who() && active()) mine = m.giving;
+    }
+    var loading = false;
+    function load(){
+      if(isDemoMode()){ changed(); return; }
+      var b = window.HugBackend;
+      if(!b || !b.enabled){ changed(); return; }
+      if(!mine && active()) loadCached();
+      if(loading) return;
+      loading = true;
+      var jobs = [];
+      if(b.getGivingOverview) jobs.push(b.getGivingOverview().then(function(r){
+        if(r && r.ok){ overview = r.overview; var raw = JSON.stringify(r.overview);
+          try { localStorage.setItem(HUG_GIVING_OVERVIEW_KEY, raw); } catch(e){} durable('set', HUG_GIVING_OVERVIEW_KEY, raw); }
+      }).catch(function(){}));
+      if(active() && b.getMyGiving) jobs.push(b.getMyGiving().then(function(r){
+        if(!active()) return;   // signed out mid-flight
+        if(r && r.ok){ mine = r.giving; mineFailed = false; saveMine(); } else { mineFailed = true; }
+      }).catch(function(){ mineFailed = true; }));
+      Promise.all(jobs).then(function(){ loading = false; changed(); }, function(){ loading = false; changed(); });
+    }
+    function forget(){ mine = null; mineFailed = false; seq++; changed(); }
+    function changed(){
+      feedRow(); renderSettings();
+      listeners.forEach(function(fn){ try { fn(); } catch(e){} });
+    }
+
+    if(screen && 'MutationObserver' in window){
+      new MutationObserver(function(){ if(screen.classList.contains('active')){ say(''); load(); } }).observe(screen, { attributes: true, attributeFilter: ['class'] });
+    }
+    // The home row's script may arrive after this one: feed it once everything has loaded.
+    window.addEventListener('load', function(){ feedRow(); });
+
+    // Each partner's own website, behind its underlined name (owner, 2026-10-16: "have each of
+    // these names underlined ... a hotlink to each of their respective websites"). Only for the
+    // partner we know runs the cause: if the admin swaps one, its name shows plain, never a wrong
+    // link. Sources: docs/giving/PARTNER-FACTS.md (empower.eco now lands on jord.tech/foundation).
+    var PARTNER_SITES = {
+      plastic:    { match: /empower/i,                url: 'https://empower.eco' },
+      carbon:     { match: /gold standard/i,          url: 'https://www.goldstandard.org' },
+      tree:       { match: /eden/i,                   url: 'https://eden-plus.org' },
+      water:      { match: /evidence action/i,        url: 'https://www.evidenceaction.org' },
+      food:       { match: /mary/i,                   url: 'https://www.marysmeals.org.uk' },
+      sanitation: { match: /toilet twinning|tearfund/i, url: 'https://toilettwinning.org' },
+      vitamin_a:  { match: /helen keller/i,           url: 'https://helenkellerintl.org' }
+    };
+    function partnerSite(id){
+      var s = PARTNER_SITES[id];
+      return s && s.match.test(String(causeById(id).partner_name || '')) ? s.url : null;
+    }
+    // The name as a link: underlined, opens in the in-app browser (HugLinks.open in
+    // native-bridge.js), and the tap goes no further (the story box closes on any other tap).
+    function partnerLink(name, url, cls){
+      var a = document.createElement('a');
+      a.className = 'partner-link' + (cls ? ' ' + cls : '');
+      a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+      a.textContent = name;
+      a.addEventListener('click', function(e){
+        e.preventDefault(); e.stopPropagation();
+        var L = window.HugLinks;
+        if(L && L.open) L.open(url); else { try { window.open(url, '_blank', 'noopener'); } catch(_) {} }
+      });
+      return a;
+    }
+
+    window.__hugGiving = {
+      site: partnerSite, link: partnerLink,   // a partner's website, and its name as a link (above)
+      load: load, forget: forget, enabledIds: enabledIds, perCup: perCup, soFar: soFar, renderOutcomes: renderOutcomes,
+      mineKnown: function(){ return !!mine; }, mineFailed: function(){ return mineFailed; },
+      onChange: function(fn){ listeners.push(fn); }, config: config,
+      cause: causeById,                 // one cause's facts (partner, unit cost) — the impact detail reads it
+      // Which home-row panel to land on (see HugGivingMath.landingPanel): the choice, then `last`.
+      landing: function(last){ return G.landingPanel({ causes: causes(), enabled: enabledIds(), last: last }); }
+    };
+    loadCached();
+    changed();
+    if(window.HugBackend) load();
+    else window.addEventListener('load', load, { once: true });
+  })();
+
+  /* IMPACT DETAIL — tap an icon on the home row: what that cause has done, and with whom.
+     Owner brief 2026-10-10. Everything on home except the tapped icon fades out (the top bar and
+     the bottom nav stay) over 0.5 s; then the story fades in over 0.5 s while a side icon slides
+     to the middle. Every move eases in and out. Tap anywhere on home (or Esc) to go back:
+     the same two steps in reverse.
+     The copy follows this account: what it has given so far, or — signed out, or before the first
+     hug — what one hug gives. Each cause has its own voice. Facts and sources:
+     docs/giving/PARTNER-FACTS.md. A body that describes ONE partner's work is shown only while
+     that partner runs the cause (`match`); if the admin swaps the partner, the generic line shows. */
+  (function impactDetail(){
+    var home = document.querySelector('.screen[data-screen="home"]');
+    var content = home && home.querySelector('.home-content');
+    var row = content && content.querySelector('[data-impact-row]');
+    var G = window.HugGivingMath;
+    if(!row || !G) return;
+    var MS = 500;          // each fade (owner brief)
+    var GLIDE_MS = 800;    // the icon's glide: longer than a fade so it can move slowly (owner: "softer and smoother")
+    var reduceMq = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+    function dur(){ return reduceMq && reduceMq.matches ? 0 : MS; }
+    function glide(){ return reduceMq && reduceMq.matches ? 0 : GLIDE_MS; }
+
+    var NAME = { plastic: 'ocean plastic', carbon: 'carbon', tree: 'trees', water: 'clean water',
+      food: 'school meals', sanitation: 'sanitation', vitamin_a: 'child health' };
+    var COPY = {
+      plastic: { match: /empower/i, partner: 'Empower',
+        given: 'You’ve had {amount} picked up and logged.',
+        each: 'Every hug gets {amount} picked up and logged.',
+        body: 'Every kilo is logged against the person who collected it and the place it came from, and they’re paid for it.' },
+      carbon: { match: /gold standard/i, partner: 'Gold Standard',
+        given: 'You’ve backed {amount} of certified carbon cuts.',
+        each: 'Every hug backs {amount} of certified carbon cuts.',
+        body: 'Each project is checked: the carbon it says it cuts has to be real and measured, and what it does for the people living around it counts too.' },
+      tree: { match: /eden/i, partner: 'Eden: People+Planet',
+        given: 'You’ve put {amount} in the ground.',
+        each: 'Every hug puts {amount} in the ground.',
+        body: 'Across Africa, Asia and Central America, people from nearby communities are paid to gather seed, raise saplings, then plant and protect the forest. A fair wage today, a forest tomorrow.' },
+      water: { match: /evidence action/i, partner: 'Evidence Action',
+        given: 'You’ve funded {amount}.',
+        each: 'Every hug funds {amount}.',
+        body: 'In Kenya and Uganda, chlorine dispensers sit right at shared water points. Turn the valve, take a measured dose, fill up, and the chlorine gets to work on the walk home.' },
+      food: { match: /mary/i, partner: 'Mary’s Meals',
+        given: 'You’ve dished up {amount}.',
+        each: 'Every hug dishes up {amount}.',
+        body: 'A daily meal at school gives a hungry child the energy to learn, and one more reason to turn up. It’s served in 16 countries, from Haiti to Yemen; in Malawi, the biggest, it’s likuni phala, a fortified maize and soya porridge.' },
+      sanitation: { match: /toilet twinning|tearfund/i, partner: 'Toilet Twinning',
+        given: 'You’ve chipped in {amount}.',
+        each: 'Every hug chips in {amount}.',
+        body: 'The money goes into water, sanitation and hygiene projects.',
+        whole: 'Every {k} hugs twin a whole family toilet.' }
+    };
+    var GENERIC = { given: 'You’ve given {amount}.', each: 'Every hug gives {amount}.' };
+
+    function tr(s){ try { if(typeof window.hugT === 'function') return window.hugT(s) || s; } catch(e){} return s; }
+    function tpl(s, vars){ s = tr(s); if(vars) for(var k in vars) s = s.split('{' + k + '}').join(String(vars[k])); return s; }
+    function el(tag, cls, text){ var e = document.createElement(tag); if(cls) e.className = cls; if(text != null) e.textContent = text; return e; }
+
+    // "3 school meals", "47 days of safe drinking water", "0.5% of a family toilet" …
+    function amountText(id, r){
+      if(!r || r.outcome == null) return null;
+      if(r.display === 'money') return G.formatPence(r.pence);
+      if(r.display === 'percent'){
+        var pp = G.formatPercentParts(r.outcome);
+        if(pp.isPercent) return tpl('{n} of a family toilet', { n: pp.value });
+        return tpl(pp.value === '1' ? '{n} family toilet' : '{n} family toilets', { n: pp.value });
+      }
+      var v = G.formatUnits(r.outcome), one = v === '1';
+      switch(id){
+        case 'plastic':   return tpl('{n} kg of plastic', { n: v });
+        case 'carbon':    return tpl('{n} kg', { n: v });           // "…backed 8 kg of carbon cuts…"
+        case 'tree':      return tpl(one ? '{n} tree' : '{n} trees', { n: v });
+        case 'water':     return tpl(one ? '{n} day of safe drinking water' : '{n} days of safe drinking water', { n: v });
+        case 'food':      return tpl(one ? '{n} school meal' : '{n} school meals', { n: v });
+        case 'vitamin_a': return tpl('{n} days of vitamin A for a child', { n: v });
+      }
+      return v;
+    }
+    function rowOf(calc, id){ return calc ? calc.perCause.filter(function(p){ return p.id === id; })[0] || null : null; }
+
+    // ---- the story box (one per app, sits over the faded home content) ----------------------
+    var box = el('section', 'impact-detail');
+    box.hidden = true;
+    box.setAttribute('aria-live', 'polite');
+    var kicker = el('p', 'impact-detail-kicker');
+    var lead = el('p', 'impact-detail-lead');
+    var body = el('p', 'impact-detail-body');
+    var facts = el('div', 'impact-detail-facts');
+    var link = el('button', 'impact-detail-link');
+    link.type = 'button';
+    [kicker, lead, body, facts, link].forEach(function(n){ box.appendChild(n); });
+    home.appendChild(box);
+
+    function fact(label, text, cls){
+      var d = el('div', 'impact-detail-fact' + (cls ? ' ' + cls : ''));
+      d.appendChild(el('span', 'impact-detail-label', tr(label)));
+      d.appendChild(typeof text === 'string' ? el('span', 'impact-detail-value', text) : text);
+      return d;
+    }
+    // A template with the amount picked out (gradient, like the tokens figure). The whole
+    // sentence is one dictionary key, so word order is each language's own.
+    function sentence(host, template, amount, vars){
+      host.textContent = '';
+      var s = tpl(template, vars), at = s.indexOf('{amount}');
+      if(at < 0 || amount == null){ host.textContent = s.split('{amount}').join(amount || ''); return; }
+      host.appendChild(document.createTextNode(s.slice(0, at)));
+      host.appendChild(el('span', 'impact-detail-amount', amount));
+      host.appendChild(document.createTextNode(s.slice(at + 8)));
+    }
+
+    function render(id){
+      var g = window.__hugGiving;
+      var c = (g && g.cause) ? g.cause(id) : { partner_name: '' };
+      var copy = COPY[id] || {};
+      var live = String(c.partner_name || '');
+      var ours = !!(copy.match && copy.match.test(live));        // our words describe THIS partner
+      var partner = ours ? copy.partner : live;
+      var words = ours ? copy : GENERIC;
+      var calc = g ? g.soFar() : null;                             // null = signed in, not known yet
+      var mine = rowOf(calc, id);
+      var off = !!(calc && calc.enabled && calc.enabled.indexOf(id) === -1);
+      var per = g ? rowOf(g.perCup(1), id) : null;
+
+      kicker.textContent = tr(NAME[id] || id);
+      var vars = { partner: partner, cause: tr(NAME[id] || id) };
+      if(off) sentence(lead, 'You’ve switched {cause} off, so your tokens go to your other causes for now.', null, vars);
+      else if(!calc) sentence(lead, 'Your figures haven’t loaded yet. Here’s what this one does.', null, vars);
+      else if(mine && mine.outcome > 0) sentence(lead, words.given, amountText(id, mine), vars);
+      else sentence(lead, words.each, amountText(id, per), vars);
+
+      var more = ours && copy.body ? tr(copy.body) : '';
+      if(ours && copy.whole && per && per.pence > 0 && c.unit_cost_pence > 0)
+        more += (more ? ' ' : '') + tpl(copy.whole, { k: Math.round(Number(c.unit_cost_pence) / per.pence) });
+      body.textContent = more;
+      body.hidden = !more;
+
+      // The partner is named ONCE, here, never in the lead (owner, 2026-10-10). Its logo, once
+      // each partner has agreed to it, replaces the name in this slot. No WHERE line: not every
+      // cause has a place we can stand behind, so places live in the body where they are known.
+      facts.textContent = '';
+      var site = ours && g && g.site ? g.site(id) : null;   // its website, when it is the partner we know
+      if(partner) facts.appendChild(fact('With', site ? g.link(partner, site, 'impact-detail-value') : partner, 'is-partner'));
+      facts.hidden = !facts.firstChild;
+      link.textContent = tr('Token allocation ›');
+    }
+
+    // ---- motion -------------------------------------------------------------------------------
+    var state = 'closed', item = null, timers = [];
+    function after(ms, fn){ timers.push(setTimeout(fn, ms)); }
+    function stopTimers(){ while(timers.length) clearTimeout(timers.pop()); }
+    function visiblePanel(){ return row.querySelector('.impact-panel:not([aria-hidden="true"])'); }
+    function rowAtRest(){
+      var p = visiblePanel(), r = window.__hugImpactRow;
+      return !!p && !p.style.transform && !(r && r.spinning);
+    }
+    function iconOf(it){ return it.querySelector('.impact-icon'); }
+    function scale(){ var w = home.offsetWidth, r = home.getBoundingClientRect(); return w && r.width ? r.width / w : 1; }
+    function setMs(ms){ content.style.setProperty('--detail-ms', ms + 'ms'); box.style.setProperty('--detail-ms', ms + 'ms'); }
+    // The glide runs as a Web Animation, on the compositor (the icon is on its own layer from the
+    // moment it is picked — see .is-picked in styles.css), so page work cannot make it stutter.
+    // The end position is written inline first; the animation plays from wherever the icon is now.
+    var glideAnim = null;
+    function glideEase(){
+      try { return getComputedStyle(document.documentElement).getPropertyValue('--detail-glide').trim() || 'ease-in-out'; }
+      catch(e){ return 'ease-in-out'; }
+    }
+    function slide(ic, x, ms){
+      var from = 0;
+      try { var m = getComputedStyle(ic).transform; from = m && m !== 'none' ? new DOMMatrix(m).m41 : 0; } catch(e){}
+      if(glideAnim){ try { glideAnim.cancel(); } catch(e){} glideAnim = null; }
+      if(!ic.animate){                                   // fallback: a plain transition
+        ic.style.transition = ms ? 'transform ' + ms + 'ms var(--detail-glide)' : 'none';
+        ic.style.transform = x ? 'translateX(' + x + 'px)' : '';
+        return;
+      }
+      ic.style.transition = 'none';
+      ic.style.transform = x ? 'translateX(' + x + 'px)' : '';
+      if(ms && Math.abs(from - x) > 0.5)
+        glideAnim = ic.animate([{ transform: 'translateX(' + from + 'px)' }, { transform: 'translateX(' + x + 'px)' }],
+          { duration: ms, easing: glideEase() });
+    }
+
+    // A closed story's icon KEEPS its own layer (.keeps-layer) instead of dropping it as it lands.
+    // On its layer iOS draws the icon a whole pt lower than painted in the row, so dropping it in
+    // plain view, just as the glide back ended, made it pop up 1 pt (owner, 2026-10-16: "when it
+    // retracts back to its natural state, it is moving up and down a bit"; simulator, bottle and
+    // tree, 204.7 -> 203.7 pt 0.2 s after landing). The layer goes only where nobody can see the
+    // move: once another story's fade has hidden the icon, as the row moves, or off home. Not on
+    // every icon all the time: that cost the opening spin its first frames (see .is-pressed).
+    // The same goes for the row's items: .detail-motion gives them their own layers for the fades,
+    // and dropping those as the story ended moved the picked icon by the same 1 pt (measured: it
+    // still popped with only the icon's layer kept). .story-layers keeps them, without the fade
+    // timings .detail-motion also carries.
+    var kept = null;
+    function keep(it){ if(kept && kept !== it) kept.classList.remove('keeps-layer'); kept = it; it.classList.add('keeps-layer'); }
+    function releaseIcon(){ if(kept){ kept.classList.remove('keeps-layer'); kept = null; } }
+    function release(){ releaseIcon(); content.classList.remove('story-layers'); }
+    function open(it){
+      if(state !== 'closed' || !rowAtRest()) return;
+      var id = it.getAttribute('data-cause');
+      if(!id) return;
+      var d = dur(), ic = iconOf(it);
+      if(!ic) return;
+      var s = scale(), vr = row.getBoundingClientRect(), ir = ic.getBoundingClientRect(), hr = home.getBoundingClientRect();
+      var dx = ((vr.left + vr.width / 2) - (ir.left + ir.width / 2)) / s;  // centre the icon on the row
+      state = 'opening'; item = it;
+      render(id);
+      box.style.top = Math.round((ir.bottom - hr.top) / s + 22) + 'px';
+      box.hidden = false;                                 // laid out now, still at opacity 0: at 0.5 s
+                                                          // only its opacity changes, no layout mid-glide
+      setMs(d);
+      content.classList.add('detail-motion', 'story-layers');
+      it.classList.add('is-picked');
+      it.setAttribute('aria-expanded', 'true');
+      void content.offsetWidth;
+      content.classList.add('is-detail');                 // 1. everything else fades out …
+      var g = glide();
+      // … and halfway through, a side icon starts its glide to the middle: one slow, even S-curve
+      // that spans the second half of the fade-out and the whole fade-in (owner, 2026-10-10).
+      after(d / 2, function(){ slide(ic, Math.abs(dx) < 1 ? 0 : dx, g); });
+      after(d, function(){
+        box.classList.add('is-in');                       // 2. the story fades in
+        if(kept && kept !== it) releaseIcon();            // the last story's icon is faded out now
+      });
+      after(Math.max(2 * d, d / 2 + g), function(){ state = 'open'; });
+    }
+    function close(instant){
+      if(state === 'closed' || (state === 'closing' && !instant)) return;
+      stopTimers();
+      var it = item, ic = it && iconOf(it), d = instant ? 0 : dur();
+      state = 'closing';
+      setMs(d);
+      var g = instant ? 0 : glide();
+      box.classList.remove('is-in');                      // 1. the story fades out, the icon glides home
+      if(ic) slide(ic, 0, g);
+      after(d, function(){
+        content.classList.remove('is-detail');            // 2. everything else fades back in
+      });
+      after(Math.max(2 * d, g), function(){
+        box.hidden = true;                                // out of layout only once nothing moves
+        content.classList.remove('detail-motion');
+        if(it){ keep(it); it.classList.remove('is-picked', 'is-pressed'); it.setAttribute('aria-expanded', 'false'); }
+        if(ic){ ic.style.transition = ''; ic.style.transform = ''; }
+        glideAnim = null;
+        state = 'closed'; item = null;
+      });
+    }
+
+    // ---- input ----------------------------------------------------------------------------------
+    // Every item is a button now (the row's drag still works: a drag swallows its click).
+    Array.prototype.forEach.call(row.querySelectorAll('.impact-item'), function(it){
+      it.setAttribute('role', 'button');
+      it.setAttribute('tabindex', '0');
+      it.setAttribute('aria-expanded', 'false');
+    });
+    function pick(it){
+      if(state === 'open') close();
+      else if(state === 'closed' && it.closest('.impact-panel') === visiblePanel()) open(it);
+    }
+    // A press that lands while the row is spinning stops the spin (impactRow); its click must not
+    // then open a story about whatever icon the row happened to settle under the finger.
+    var spinTapAt = 0;
+    function noteSpinTap(){ var r = window.__hugImpactRow; if(r && r.spinning) spinTapAt = Date.now(); }
+    content.addEventListener('pointerdown', noteSpinTap, true);
+    content.addEventListener('touchstart', noteSpinTap, { capture: true, passive: true });
+    // The icon's own layer is taken at the press, under the finger (see .is-pressed in styles.css).
+    // A press that does not become a pick (a drag, a cancelled tap) gives it back a moment later.
+    row.addEventListener('pointerdown', function(e){
+      var r = window.__hugImpactRow, it = e.target && e.target.closest ? e.target.closest('.impact-item') : null;
+      if(!it || state !== 'closed' || (r && r.spinning)) return;
+      it.classList.add('is-pressed');
+      setTimeout(function(){ if(!it.classList.contains('is-picked')) it.classList.remove('is-pressed'); }, 900);
+    });
+    row.addEventListener('click', function(e){
+      if(e.defaultPrevented || state !== 'closed') return; // a drag's end; or open: home's tap closes
+      if(Date.now() - spinTapAt < 800) return;            // this tap stopped the spin
+      var it = e.target && e.target.closest ? e.target.closest('.impact-item') : null;
+      if(it && row.contains(it)) pick(it);
+    });
+    // No ×: while the story is up, a tap anywhere on home puts it away (owner, 2026-10-10) —
+    // except "Token allocation", which goes there, and the top bar and bottom nav,
+    // which keep their own jobs.
+    home.addEventListener('click', function(e){
+      if(state !== 'open') return;
+      var t = e.target;
+      if(link.contains(t) || (t.closest && t.closest('.top, .bottom-nav, .partner-link'))) return;
+      close();
+    });
+    row.addEventListener('keydown', function(e){
+      if(e.key !== 'Enter' && e.key !== ' ') return;
+      var it = e.target && e.target.closest ? e.target.closest('.impact-item') : null;
+      if(!it) return;
+      e.preventDefault(); pick(it);
+    });
+    // While the story is up the row must not drag, spin or hand the touch to the page swipe:
+    // stop the press here, on the way down, before the row's own handlers see it.
+    function guard(e){ if(state !== 'closed' && row.contains(e.target)) e.stopPropagation(); }
+    content.addEventListener('pointerdown', guard, true);
+    content.addEventListener('touchstart', guard, { capture: true, passive: true });
+    // Not a [data-go] button: those are wired once at start-up (document.querySelectorAll in the
+    // router), before this box exists, so a data-go here would never fire. Navigate directly.
+    link.addEventListener('click', function(e){
+      e.stopPropagation();
+      if(window.__hugNav) window.__hugNav('giving');   // leaving home closes the story (observer below)
+    });
+    document.addEventListener('keydown', function(e){ if(e.key === 'Escape' && state !== 'closed') close(); });
+    // If the row moves under an open story (the opening spin, a return from the background, a
+    // panel switch from elsewhere) the story is no longer about what is on screen: drop it at once.
+    var panelWatch = new MutationObserver(function(){
+      if(kept && !rowAtRestFor(kept)) release();          // the row is moving: the drop hides in it
+      if(state !== 'closed' && !rowAtRestFor(item)) close(true);
+    });
+    Array.prototype.forEach.call(row.querySelectorAll('.impact-panel'), function(p){
+      panelWatch.observe(p, { attributes: true, attributeFilter: ['aria-hidden', 'style'] });
+    });
+    function rowAtRestFor(it){
+      var p = it && it.closest('.impact-panel');
+      return !!p && p.getAttribute('aria-hidden') !== 'true' && !p.style.transform;
+    }
+    // Leaving home (or the app) puts the row back as it was, at once.
+    new MutationObserver(function(){ if(!home.classList.contains('active')){ close(true); release(); } })
+      .observe(home, { attributes: true, attributeFilter: ['class'] });
+    document.addEventListener('visibilitychange', function(){ if(document.visibilityState === 'hidden'){ close(true); release(); } });
+    // New figures while it is open: rewrite the words in place.
+    if(window.__hugGiving && window.__hugGiving.onChange)
+      window.__hugGiving.onChange(function(){ if(item && state !== 'closing') render(item.getAttribute('data-cause')); });
+
+    window.__hugImpactDetail = { open: function(id){ var it = row.querySelector('.impact-panel:not([aria-hidden="true"]) [data-cause="' + id + '"]'); if(it) open(it); },
+      close: close, get state(){ return state; } };
   })();
 
   (function impactFeature(){
-    // ECO POINTS (combined, link-gated — matches the website + referral_leaderboard()):
-    //   • each LINKED hug o = 25 eco points (a full mug's offsets)
-    //   • each non-reneged referral = +5 (20% of a mug, a BONUS on top — a refund
-    //     flips it to 'reneged' and the 5 drops off automatically)
-    // The physical offset per mug is unchanged: 25 eco points = 1 mug =
-    //   40 bottles / 4 kg CO2e / 1 tree → so 1 eco point = 1.6 / 0.16 / 0.04.
-    var POINTS_PER_MUG = 25;
-    var POINTS_PER_REFERRAL = 5;
-    var PER_MUG = { bottles: 40, co2kg: 4, trees: 1 };   // real per-mug offset (the stepper)
-    var PER_POINT = { bottles: PER_MUG.bottles / POINTS_PER_MUG, co2kg: PER_MUG.co2kg / POINTS_PER_MUG, trees: PER_MUG.trees / POINTS_PER_MUG };
-    function ecoPointsFor(mugs, refs){ return POINTS_PER_MUG * (mugs || 0) + POINTS_PER_REFERRAL * (refs || 0); }
-    function fmtMass(kg){
-      if(kg >= 1000) return (Math.round(kg/100)/10) + ' t';
-      return (Math.round(kg*10)/10) + ' kg';
-    }
-    function fmtTrees(n){ return String(Math.round(n * 100) / 100); }  // 0.25 steps -> clean decimals
-    function setTriplet(nodes, b, c, t){
-      if(nodes[0]) nodes[0].textContent = b;
-      if(nodes[1]) nodes[1].textContent = c;
-      if(nodes[2]) nodes[2].textContent = t;
-    }
-
-    // (A) "your impact so far" (impact screen) + the home summary grid show the
-    // signed-in user's REAL cumulative impact: purchased mugs × the factors.
-    var homeVals = document.querySelectorAll('.home-content .impact-grid .impact-value');   // [bottles, co2, trees]
-    var soFarGroup = document.querySelectorAll('.impact-content .impact-cards')[0];          // first group = "your impact so far"
-    var soFarVals = soFarGroup ? soFarGroup.querySelectorAll('.impact-card-val') : [];
-    var ecoEl = document.getElementById('imp-eco');                                          // the eco-points hero number
-    var placeholder = null;   // original marketing copy, restored when signed out
-    function renderYourImpact(linkedMugs, refs){
-      if(!placeholder){
-        placeholder = {
-          home: Array.prototype.map.call(homeVals, function(el){ return el.textContent; }),
-          soFar: Array.prototype.map.call(soFarVals, function(el){ return el.textContent; }),
-          eco: ecoEl ? ecoEl.textContent : '0'
-        };
-      }
-      if(linkedMugs == null){
-        setTriplet(homeVals, placeholder.home[0], placeholder.home[1], placeholder.home[2]);
-        setTriplet(soFarVals, placeholder.soFar[0], placeholder.soFar[1], placeholder.soFar[2]);
-        if(ecoEl) ecoEl.textContent = placeholder.eco;
-        return;
-      }
-      var points = ecoPointsFor(linkedMugs, refs);   // 25/mug + 5/referral
-      var b = Math.round(points * PER_POINT.bottles);
-      var c = fmtMass(points * PER_POINT.co2kg);
-      var t = fmtTrees(points * PER_POINT.trees);
-      setTriplet(homeVals, b, c, t);
-      setTriplet(soFarVals, b, c, t);
-      if(ecoEl) ecoEl.textContent = String(points);
-    }
-
-    // (B) the per-mug stepper — an educational "we offset this per mug" calculator.
+    // TOKENS (combined, link-gated — matches the website + referral_leaderboard()):
+    //   • each LINKED hug = 6 tokens (£1.50 of 25p tokens)
+    //   • each non-reneged referral = +1 token (a refund flips it to 'reneged' and it drops off)
+    // WHERE the tokens go is not decided here: it is the account's own split (givingFeature),
+    // worked out by the server (my_giving) or, signed out / in prototype mode, by giving-math.js.
+    var G = window.HugGivingMath;
+    var ecoEl = document.getElementById('imp-eco');                  // the tokens hero number
+    var soFarEl = document.getElementById('giving-so-far');
+    var cupEl = document.getElementById('giving-per-cup');
     var qtyEl = document.getElementById('imp-qty');
-    var bottlesEl = document.getElementById('imp-bottles');
-    var co2El = document.getElementById('imp-co2');
-    var treesEl = document.getElementById('imp-trees');
     var minus = document.getElementById('imp-minus');
     var plus = document.getElementById('imp-plus');
     var qty = 1;
-    function updateStepper(){
-      if(qtyEl) qtyEl.textContent = qty;
-      if(bottlesEl) bottlesEl.textContent = qty * PER_MUG.bottles;
-      if(co2El) co2El.textContent = fmtMass(qty * PER_MUG.co2kg);
-      if(treesEl) treesEl.textContent = qty;
+
+    function tokensFor(mugs, refs){
+      var cfg = window.__hugGiving ? window.__hugGiving.config() : G.DEFAULT_CONFIG;
+      return G.compute({ config: cfg, cups: mugs, referrals: refs }).tokens;
     }
-    if(minus) minus.addEventListener('click', function(e){ e.stopPropagation(); if(qty>1){ qty--; updateStepper(); } });
-    if(plus) plus.addEventListener('click', function(e){ e.stopPropagation(); if(qty<99){ qty++; updateStepper(); } });
+    function setHero(text){ if(ecoEl) ecoEl.textContent = text; }
+    function renderSoFar(){
+      var giving = window.__hugGiving;
+      if(!giving || !soFarEl) return;
+      giving.renderOutcomes(soFarEl, giving.soFar());   // null (unknown) draws dashes, not zeros
+    }
+    function renderCup(){
+      if(qtyEl) qtyEl.textContent = qty;
+      var giving = window.__hugGiving;
+      if(giving && cupEl) giving.renderOutcomes(cupEl, giving.perCup(qty));
+    }
+    if(minus) minus.addEventListener('click', function(e){ e.stopPropagation(); if(qty>1){ qty--; renderCup(); } });
+    if(plus) plus.addEventListener('click', function(e){ e.stopPropagation(); if(qty<99){ qty++; renderCup(); } });
     [minus, plus].forEach(function(bn){ if(!bn) return;
       ['pointerdown','touchstart','pointermove'].forEach(function(ev){ bn.addEventListener(ev, function(e){ e.stopPropagation(); }); });
     });
-    updateStepper();
 
-    // Impact ties to the number of products LINKED to the account (1 mug = 1 tree),
-    // so the offsets and the "linked products" count always match.
+    // Impact ties to the number of products LINKED to the account (1 hug = 6 tokens),
+    // so the tokens and the "linked products" count always match.
     function load(){
       var mugs, refs;
       if(isDemoMode()){
@@ -5482,14 +8479,42 @@
       } else if(document.documentElement.dataset.accountStatus !== 'active'){
         mugs = 0; refs = 0;   // fresh / signed-out
       } else {
+        // `|| 0` counted an UNKNOWN referral balance as zero referrals, so the tokens
+        // hero stated a figure computed from a read that never landed. Unknown is not zero:
+        // hold the placeholder until the balance is actually known.
+        var ref = window.__hugReferral;
+        if(ref && ref.known === false){ setHero(HUG_UNKNOWN); renderSoFar(); renderCup(); return; }
         mugs = (typeof linkedProducts !== 'undefined' && linkedProducts) ? linkedProducts.length : 0;
-        refs = (window.__hugReferral && window.__hugReferral.count) || 0;   // non-reneged referral count
+        refs = (ref && ref.count) || 0;   // non-reneged referral count
       }
-      renderYourImpact(mugs, refs);
-      if(mugs > 0){ qty = Math.min(99, mugs); updateStepper(); }
+      var g = window.__hugGiving;
+      // The server's own total wins when this account has one; otherwise the same formula here.
+      var s = g && !isDemoMode() && document.documentElement.dataset.accountStatus === 'active' ? g.soFar() : null;
+      setHero(G.formatTokensTotal(s ? s.tokens : tokensFor(mugs, refs)));
+      renderSoFar(); renderCup();
+      if(mugs > 0 && !load.seeded){ qty = Math.min(99, mugs); load.seeded = true; renderCup(); }
     }
     window.__hugImpact = { load: load };
+    if(window.__hugGiving) window.__hugGiving.onChange(function(){ load(); });
     load();
+  })();
+
+  /* REFERRAL RATE — the rates behind the share text ("… {n}% off"). The balance screen's rate card
+     is gone (owner, 2026-10-10: "saying the 5% stuff again.. they need to be told once and that is
+     it"); what stays is the friend's % for the share message: the account's own current rate
+     (my_referral_balance, SPEC §3.2) when known, else the base 5%. */
+  (function referralRateFeature(){
+    var rates = null;
+    function friendRate(){
+      if(rates && isFinite(rates.friendRate)) return rates.friendRate;
+      if(rates && isFinite(rates.baseFriendRate)) return rates.baseFriendRate;
+      return 0.05;
+    }
+    window.__hugReferralRates = {
+      set: function(r){ rates = r || null; },
+      render: function(){},
+      friendPercent: function(){ return Math.round(friendRate() * 100); }
+    };
   })();
 
 
@@ -5521,7 +8546,41 @@
       email = String(email||'').trim().toLowerCase();
       var list = getBioEmails().filter(function(e){ return e !== email; });
       if(on) list.unshift(email);
-      try { localStorage.setItem(BIO_EMAILS_KEY, JSON.stringify(list.slice(0, 8))); } catch(e){}
+      var payload = JSON.stringify(list.slice(0, 8));
+      try { localStorage.setItem(BIO_EMAILS_KEY, payload); } catch(e){}
+      durableSet(BIO_EMAILS_KEY, payload);
+    }
+    /* WHY THESE TWO LISTS ARE MIRRORED.
+       The Face ID credential itself lives in the iOS Keychain, which survives everything —
+       eviction, and even a reinstall. But whether a chip is OFFERED is decided entirely by
+       these two localStorage keys: getKnownEmails() supplies the chips, hasBio() puts the
+       face glyph on one. Lose localStorage and there is no chip, so there is no Face ID
+       entry point at all — the credential is still sitting in the Keychain, unreachable.
+       That is what "the face recognition was not working" is: not a broken prompt, a
+       missing button. Same durable-thing/evictable-index split as the balance had.
+       Restoring a chip whose Keychain entry has genuinely gone is safe: biometricSignInAs
+       already handles a credential that no longer works by dropping it and emailing a code. */
+    function hydrateAccountListsFromDurable(){
+      if(!window.HugStore) return Promise.resolve(false);
+      var wantKnown = getKnownEmails().length === 0;
+      var wantBio = getBioEmails().length === 0;
+      if(!wantKnown && !wantBio) return Promise.resolve(false);
+      return Promise.all([
+        wantKnown ? window.HugStore.get(KNOWN_EMAILS_KEY) : null,
+        wantBio ? window.HugStore.get(BIO_EMAILS_KEY) : null
+      ]).then(function(vals){
+        var changed = false;
+        [[KNOWN_EMAILS_KEY, vals[0]], [BIO_EMAILS_KEY, vals[1]]].forEach(function(pair){
+          if(!pair[1]) return;
+          try {
+            var parsed = JSON.parse(pair[1]);
+            if(!Array.isArray(parsed) || !parsed.length) return;   // never write junk back
+            localStorage.setItem(pair[0], pair[1]);
+            changed = true;
+          } catch(e){}
+        });
+        return changed;
+      }).catch(function(){ return false; });
     }
     function refreshBioAvailable(){
       var b = window.HugBackend;
@@ -5570,15 +8629,17 @@
     function rememberEmail(email){
       email = String(email||'').trim().toLowerCase();
       if(!isValidEmail(email)) return;
-      try {
-        var list = getKnownEmails().filter(function(e){ return e !== email; });
-        list.unshift(email);
-        localStorage.setItem(KNOWN_EMAILS_KEY, JSON.stringify(list.slice(0, 4)));
-      } catch(e){}
+      var list = getKnownEmails().filter(function(e){ return e !== email; });
+      list.unshift(email);
+      var payload = JSON.stringify(list.slice(0, 4));
+      try { localStorage.setItem(KNOWN_EMAILS_KEY, payload); } catch(e){}
+      durableSet(KNOWN_EMAILS_KEY, payload);
     }
     function forgetEmail(email){
-      try { localStorage.setItem(KNOWN_EMAILS_KEY, JSON.stringify(getKnownEmails().filter(function(e){ return e !== email; }))); }
+      var payload = JSON.stringify(getKnownEmails().filter(function(e){ return e !== email; }));
+      try { localStorage.setItem(KNOWN_EMAILS_KEY, payload); }
       catch(e){}
+      durableSet(KNOWN_EMAILS_KEY, payload);   // or the next boot restores the forgotten account
     }
     // Tappable chips for each remembered account — only on the sign-in screen.
     // A chip with Face ID enabled shows a face glyph and signs in on tap; others
@@ -5740,8 +8801,17 @@
       render();
       overlay.classList.add('show');
       // Re-render chips once we know if Face ID is set up (async), so bio chips
-      // pick up the face glyph + tap-to-Face-ID behaviour.
-      refreshBioAvailable().then(function(){ renderAccountChips(); });
+      // pick up the face glyph + tap-to-Face-ID behaviour. Recover the account lists
+      // from the durable mirror first — without that, a device whose localStorage was
+      // evicted (or freshly reinstalled) shows no chips at all and the Keychain
+      // credential behind Face ID is unreachable. Re-fills the prefill too.
+      hydrateAccountListsFromDurable().then(function(restored){
+        if(restored && mode === 'signin' && !els.email.value){
+          var k = getKnownEmails();
+          if(k.length) els.email.value = k[0];
+        }
+        return refreshBioAvailable();
+      }).then(function(){ renderAccountChips(); });
     }
     function close(){ if(overlay){ overlay.classList.remove('show'); overlay.style.paddingBottom = ''; } }
 
@@ -5921,10 +8991,12 @@
       showToast('Your account was deleted.');
     }
     async function onSignOutDemo(){
-      var ok = await showConfirm({ title:'Sign out', body:'Sign out of the prototype account?', confirm:'Sign out', cancel:'Cancel' });
+      // Prototype mode is drawn OVER the real signed-in account, not a separate fake one, so
+      // signing out here signs the real account out — and ends prototype mode with it.
+      var ok = await showConfirm({ title:'Sign out', body:'Sign out of your hug account? Prototype mode turns off.', confirm:'Sign out', cancel:'Cancel' });
       if(!ok) return;
-      // Prototype "sign out" leaves the demo account -> fresh / signed-out state.
-      try { localStorage.setItem('hug-demo-mode', 'off'); } catch(e){}
+      try { if(window.HugBackend && window.HugBackend.signOut) await window.HugBackend.signOut(); } catch(e){}
+      if(window.clearHugAccountState) window.clearHugAccountState();
       location.reload();
     }
     function render(){
@@ -5947,6 +9019,122 @@
     }
     window.__hugAccountControls = { render: render };
     render();
+  })();
+
+  /* PROTOTYPE MODE — the Settings switch. Shown only to a signed-in person the server has said
+     may have it (see the prototype gate near isDemoMode and refreshPrototypeAccess). Turning it
+     on explains itself first; either direction reloads, because a dozen features read the mode
+     while they build the page. The launch curtain covers the reload. */
+  (function prototypeSwitchFeature(){
+    var settings = document.querySelector('.screen[data-screen="settings"] .content.plain-content');
+    if(!settings) return;
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'simple-row';
+    btn.classList.add('proto-row');
+    btn.setAttribute('role', 'switch');
+    btn.hidden = true;
+    btn.innerHTML = '<span class="row-left"><svg class="row-svg" viewBox="0 0 64 64" aria-hidden="true"><use href="#i-sparkle"></use></svg>prototype mode</span>' +
+      '<span class="proto-switch" aria-hidden="true"><span class="proto-knob"></span></span>';
+    // Above the account rows, below the screens list — it changes what every screen shows.
+    var controls = settings.querySelector('.account-controls');
+    settings.insertBefore(btn, controls || null);
+    function signedInEmail(){
+      if(document.documentElement.dataset.accountStatus !== 'active') return '';
+      try { return localStorage.getItem('hug-account-email-v1') || ''; } catch(e){ return ''; }
+    }
+    function render(){
+      var on = isDemoMode();
+      btn.hidden = !(on || prototypeAllowedFor(signedInEmail()));
+      btn.setAttribute('aria-checked', on ? 'true' : 'false');
+      btn.classList.toggle('is-on', on);
+    }
+    btn.addEventListener('click', async function(){
+      if(isDemoMode()){ setPrototypeMode(false); location.reload(); return; }
+      if(!prototypeAllowedFor(signedInEmail())){ render(); return; }
+      var ok = await showConfirm({ title:'Prototype mode',
+        body:'Fills the app with sample people, referrals and money, to show what it looks like when it is busy. Your real account is not changed, and nothing you do in prototype mode is saved.',
+        confirm:'Turn on', cancel:'Cancel' });
+      if(!ok) return;
+      setPrototypeMode(true);
+      location.reload();
+    });
+    window.__hugPrototypeSwitch = { render: render };
+    render();
+    // The bridge refused a write because prototype mode is on (native-bridge.js prototypeGuard).
+    // Say so plainly, so a demo never looks broken and nobody thinks a sample change was saved.
+    window.addEventListener('hug:prototype-blocked', function(){
+      showToast('Prototype mode — nothing was changed.');
+    });
+  })();
+
+  // ----- Language selector (Settings): mirrors the storefront footer switcher -----
+  // A "language" row that opens an on-brand bottom-sheet (clone of the help overlay)
+  // listing the same 20 languages as the website (flag + native name, gradient-dot on
+  // the current one). Picking one persists the choice and reloads; assets/i18n/hug-i18n.js
+  // then translates the whole app on the fresh DOM. Language names are never translated,
+  // so the option list + the row's current-language chip carry data-i18n-skip.
+  (function languageSelector(){
+    var settings = document.querySelector('.screen[data-screen="settings"] .content.plain-content');
+    if(!settings) return;
+    var LANGS = (window.HUG_LANGS) || [{ code:'en', flag:'🇬🇧', name:'English' }];
+    function cur(){ try { return (window.hugCurrentLang ? window.hugCurrentLang() : 'en'); } catch(e){ return 'en'; } }
+    function meta(code){ for(var i=0;i<LANGS.length;i++){ if(LANGS[i].code===code) return LANGS[i]; } return LANGS[0]; }
+
+    // Settings row. The "language" label translates; the current-language chip does not.
+    var row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'simple-row lang-row';
+    function paintRow(){
+      var m = meta(cur());
+      // The row is just the current language: flag + native name. No icon, no "language"
+      // label — the flag makes it self-explanatory, and language names are never translated.
+      row.innerHTML = '<span class="row-left" translate="no" data-i18n-skip>' +
+          '<span class="lang-row-flag' + (m.flag.charCodeAt(0) === 0xD83C ? '' : ' lang-flag--script') + '" aria-hidden="true">' + m.flag + '</span>' +
+          '<span class="lang-row-name">' + m.name + '</span>' +
+        '</span><span class="lang-row-chev" aria-hidden="true">›</span>';
+    }
+    paintRow();
+    // Sit with the primary nav rows: right after "linked products".
+    var linked = settings.querySelector('#settings-linked');
+    if (linked && linked.nextSibling) settings.insertBefore(row, linked.nextSibling);
+    else if (linked) settings.appendChild(row);
+    else settings.appendChild(row);
+
+    function open(){
+      var active = cur();
+      var opts = LANGS.map(function(l){
+        return '<button type="button" class="lang-opt" role="option" data-lang="' + l.code + '" lang="' + l.code + '" aria-selected="' + (l.code===active?'true':'false') + '">' +
+          '<span class="lang-flag' + (l.flag.charCodeAt(0) === 0xD83C ? '' : ' lang-flag--script') + '" aria-hidden="true">' + l.flag + '</span>' +
+          '<span class="lang-name">' + l.name + '</span>' +
+        '</button>';
+      }).join('');
+      var ov = document.createElement('div');
+      ov.className = 'lang-overlay';
+      ov.innerHTML =
+        '<div class="lang-card" role="dialog" aria-modal="true" aria-label="Language">' +
+          '<div class="lang-head lang-head--bare"><button type="button" class="lang-close" aria-label="Close">✕</button></div>' +
+          '<div class="lang-scroll" role="listbox" aria-label="Language" translate="no" data-i18n-skip>' + opts + '</div>' +
+        '</div>';
+      function close(){ ov.classList.remove('show'); document.removeEventListener('keydown', onKey); setTimeout(function(){ ov.remove(); }, 200); }
+      function onKey(e){ if(e.key==='Escape') close(); }
+      ov.querySelector('.lang-close').addEventListener('click', close);
+      ov.addEventListener('click', function(e){ if(e.target===ov) close(); });
+      document.addEventListener('keydown', onKey);
+      ov.querySelectorAll('.lang-opt').forEach(function(btn){
+        btn.addEventListener('click', function(){
+          var code = btn.getAttribute('data-lang');
+          if(code === cur()){ close(); return; }
+          // Persist + reload; the i18n engine applies the new language on next boot.
+          if(window.hugSetLang){ window.hugSetLang(code); }
+          else { try { localStorage.setItem('hug_lang', code); } catch(e){} location.reload(); }
+        });
+      });
+      document.body.appendChild(ov);
+      requestAnimationFrame(function(){ ov.classList.add('show'); });
+    }
+    row.addEventListener('click', open);
+    window.__hugLanguage = { open: open, repaint: paintRow };
   })();
 
   // ----- Hidden diagnostics screen (support / release debugging) -----
@@ -6042,7 +9230,7 @@
         var txt = buildText(snap, live), ok = false, b = this;
         try { await navigator.clipboard.writeText(txt); ok = true; } catch(e){}
         if(!ok){ try { var ta=document.createElement('textarea'); ta.value=txt; ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); ok=true; } catch(e){} }
-        b.textContent = ok ? 'copied ✓' : 'copy failed';
+        if (window.hugSetText) window.hugSetText(b, ok ? 'copied ✓' : 'copy failed'); else b.textContent = ok ? 'copied ✓' : 'copy failed';
         setTimeout(function(){ b.textContent = 'copy for support'; }, 1600);
       });
       document.body.appendChild(ov);
@@ -6188,19 +9376,49 @@
     renderHugAccountState();
   })();
 
-  // ----- Home "ECO POINTS" = your combined eco points (25/linked mug + 5/referral),
+  // ----- Home "TOKENS" = your combined tokens (6/linked hug + 1/referral),
   // read from the leaderboard's is_me row (0 until you have any). -----
   (function pointsFeature(){
     var el = document.querySelector('.points-block .points');
     if(!el) return;
-    function set(v){ el.textContent = String(v); }
+    // The hero is final once it states a figure. A blank ('') means "not known yet", so it
+    // does not count — unless nothing more can come (no backend, or the read failed).
+    function set(v){ el.textContent = String(v); if(v !== '' && window.__hugBoot) window.__hugBoot.release('boot-points'); }
+    function settled(){ if(window.__hugBoot) window.__hugBoot.release('boot-points'); }
     function load(){
       if(isDemoMode()){ set(DEMO.points); return; }
-      if(document.documentElement.dataset.accountStatus !== 'active' || !(window.HugBackend && window.HugBackend.enabled)){ set(0); return; }
-      window.HugBackend.getLeaderboard().then(function(res){
+      // Same honesty rule as the balance pill: while boot has not established whose
+      // account this is, state nothing rather than a 0 that may have to be taken back.
+      if(bootAccountStateUnknown){ set(''); return; }
+      // Render only — NO clearCachedPoints() here. This runs on every account-state
+      // render, including while boot has not yet confirmed who this is, and wiping the
+      // durable cache from a paint path destroyed the very figure the restore was about
+      // to read back. Sign-out is what clears it (setHugAccountState), and sign-out is
+      // the only thing that should.
+      // The hero is the account's whole token count, and nothing else (owner, 2026-10-10).
+      if(document.documentElement.dataset.accountStatus !== 'active'){ set(0); return; }
+      // Signed in: lead with the last figure we actually saw. Painting the cache first
+      // means the hero is right on frame one and the RPC below only ever confirms it.
+      var cached = loadCachedPoints();
+      if(cached != null) set(cached);
+      else set('');   // signed in, never yet read — blank beats a fabricated 0
+      if(!window.HugBackend) return;   // bridge not loaded yet: a later load() will fetch
+      if(!window.HugBackend.enabled) return settled();
+      fetchLeaderboardOnce().then(function(res){
+        if(document.documentElement.dataset.accountStatus !== 'active') return;   // signed out mid-flight
         var me = (res && res.ok && Array.isArray(res.rows)) ? res.rows.filter(function(r){ return r.is_me; })[0] : null;
-        set(me ? (Number(me.eco_points) || 0) : 0);
-      }).catch(function(){ set(0); });
+        if(!(res && res.ok)) return settled();   // failed read: keep the cached figure, don't zero it
+        // referral_leaderboard().tokens; an older backend sends eco points, converted from the
+        // hugs and referrals behind them (see boardTokens in the leaderboard).
+        var tk = me ? Number(me.tokens) : 0;
+        if(me && !(me.tokens != null && isFinite(tk))){
+          var m = Number(me.mugs), r = Number(me.referrals);
+          tk = (me.mugs != null && me.referrals != null && isFinite(m) && isFinite(r)) ? 6 * m + r : NaN;
+        }
+        if(!isFinite(tk)) return settled();   // cannot state tokens honestly: keep what is showing
+        saveCachedPoints(tk);
+        set(tk);
+      });
     }
     window.__hugPoints = { load: load };
     load();
@@ -6544,7 +9762,13 @@
       if(sum) sum.classList.toggle('open', !!s.card);
       if(s.art && s.art.url){
         prev.className = 'gift-card-preview gcp-art';
-        prev.innerHTML = '<img src="' + s.art.url + '" alt="">';
+        // Security (Phase 1C): set the URL as a property, never interpolate it
+        // into an innerHTML src="" attribute (avoids attribute-breakout).
+        prev.textContent = '';
+        var artImg = document.createElement('img');
+        artImg.alt = '';
+        artImg.src = s.art.url;
+        prev.appendChild(artImg);
       } else {
         prev.className = 'gift-card-preview gcp-white';
         prev.innerHTML = '<span class="gcp-msg card-msg style-' + (s.font||'plain') + '"></span>';
@@ -6781,7 +10005,7 @@
     var tick = document.createElement('span');
     tick.className = 'username-tick';
     tick.setAttribute('aria-hidden', 'true');
-    tick.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.2 4.4L19 7"/></svg>';
+    tick.innerHTML = '<svg viewBox="0 0 24 24"><path d="M18.16 4 C18.35 3.96 18.46 3.98 18.58 4 C18.69 4.02 18.8 4.06 18.87 4.11 C18.93 4.16 18.98 4.23 18.99 4.3 C19 4.38 19.36 3.93 18.94 4.57 C18.52 5.21 17.21 6.98 16.47 8.14 C15.73 9.3 15.13 10.33 14.49 11.53 C13.86 12.73 13.1 14.37 12.66 15.35 C12.21 16.33 12.07 16.74 11.81 17.42 C11.55 18.1 11.26 19.06 11.11 19.44 C10.96 19.83 11 19.65 10.91 19.73 C10.83 19.81 10.72 19.87 10.6 19.92 C10.49 19.96 10.35 19.99 10.21 20 C10.07 20.01 9.9 20.01 9.76 19.97 C9.62 19.93 9.69 20.2 9.36 19.77 C9.04 19.34 8.3 18.09 7.79 17.4 C7.28 16.7 6.74 16.1 6.31 15.6 C5.88 15.11 5.43 14.66 5.22 14.42 C5.01 14.19 5.09 14.25 5.05 14.18 C5.02 14.1 4.99 14.06 5.01 13.97 C5.03 13.88 5.09 13.74 5.19 13.65 C5.3 13.55 5.47 13.46 5.63 13.42 C5.78 13.37 5.99 13.36 6.14 13.37 C6.29 13.39 6.36 13.4 6.51 13.5 C6.67 13.6 6.8 13.68 7.07 13.97 C7.34 14.25 7.67 14.6 8.12 15.21 C8.57 15.82 9.48 17.2 9.78 17.63 C10.09 18.05 9.91 17.75 9.96 17.76 C10.02 17.77 10.07 17.75 10.12 17.7 C10.17 17.65 10.09 17.91 10.26 17.48 C10.44 17.05 10.85 15.92 11.19 15.11 C11.53 14.29 11.93 13.39 12.3 12.61 C12.67 11.82 13.07 11.03 13.42 10.38 C13.76 9.72 13.95 9.37 14.37 8.66 C14.79 7.96 15.51 6.8 15.94 6.14 C16.37 5.49 16.68 5.05 16.93 4.74 C17.19 4.42 17.26 4.37 17.46 4.25 C17.67 4.13 17.98 4.04 18.16 4 Z"/></svg>';
     wrap.appendChild(tick);
     function flashTick(){
       wrap.classList.remove('tick-show');
@@ -6797,10 +10021,11 @@
     function setStatus(s){
       status = s || '';
       badge.className = 'username-status' + (status ? ' is-' + status : '');
-      badge.textContent = status === 'available' ? '✓ available'
+      var msg = status === 'available' ? '✓ available'
         : status === 'taken' ? '✕ taken — pick another'
         : status === 'invalid' ? '✕ use 2–24 characters'
         : status === 'checking' ? 'checking…' : '';
+      if (window.hugSetText) window.hugSetText(badge, msg); else badge.textContent = msg;
     }
     // Wobble BOTH the status line and the name box itself — a tactile "nope".
     function flashBad(){
@@ -6972,6 +10197,9 @@
     }
     function clear(){ render([]); }
     function refresh(){
+      // Prototype: sample orders, never the real account's (that would be a real read under a
+      // sample identity, and the two would be shown side by side as if they belonged together).
+      if(isDemoMode()){ render(DEMO.purchases()); return; }
       var b = window.HugBackend;
       if(!(b && b.enabled && b.listPurchases) || document.documentElement.dataset.accountStatus !== 'active'){ clear(); return; }
       b.listPurchases().then(function(res){ render(res && res.ok ? (res.purchases||[]) : []); }).catch(function(){ clear(); });
@@ -7024,7 +10252,13 @@
       city: fv("city"), postcode: fv("postal-code"), country: "United Kingdom"
     };
     if (!addr.name && !addr.line1 && !addr.city && !addr.postcode) return;   // nothing to save
-    backend.saveShippingAddress(addr);
+    // The form flips back to "edit", which reads as saved — so a write that did NOT
+    // land has to say so. saveShippingAddress now reports a zero-row update as a
+    // failure (it used to return ok:true having written nothing); this is where the
+    // user finds out, rather than at delivery.
+    Promise.resolve(backend.saveShippingAddress(addr)).then(function(res){
+      if(!res || !res.ok) showToast('Couldn’t save your address. Try again.');
+    }).catch(function(){ showToast('Couldn’t save your address. Try again.'); });
     if (typeof prefillCheckoutAddress === "function") prefillCheckoutAddress();
   }
   box.addEventListener("keydown", e => {
@@ -7085,7 +10319,7 @@
 })();
 
 
-/* Referral code apply (checkout). Validates + previews the 10% off in the total;
+/* Referral code apply (checkout). Validates + previews the friend's % off in the total;
    the applied state persists until the code is edited. */
 (function () {
   const btn = document.querySelector(".discount-apply");
@@ -7103,7 +10337,7 @@
       return;
     }
     btn.classList.add("applied");
-    btn.textContent = "applied ✓";
+    if (window.hugSetText) window.hugSetText(btn, "applied ✓"); else btn.textContent = "applied ✓";
   });
   // Editing the code clears the applied state + the previewed discount.
   field.addEventListener("input", () => {
@@ -7343,25 +10577,24 @@
       measure();
       show();
       hideAfter(ENTER_MS);
-    } else {
+    } else if (!html.classList.contains("scan-cam-veil") && onScanStill()) {
+      // Only while the scan page stays (a scan ends there: the box hides the camera's last frame).
+      // Not after a swipe: the swipe's veil already covers the camera in white, and this grey box
+      // (it stays where the camera window was, over whatever screen comes in) faded in and out
+      // over the QR code just after a swipe landed (owner, 2026-10-16). Not on any other leave
+      // either (2026-10-17): it sat over the page coming in for 0.4 s and then went, on/off; the
+      // camera now stops only after the switch, under the white stop-cover (stopProductQrScan).
       show();
       hideAfter(EXIT_MS);
     }
     lastCam = camNow;
   }).observe(html, { attributes:true, attributeFilter:["class"] });
 
-  var scanLeaving = false;
-  new MutationObserver(function(){
-    var cls = scanScreen.className || "";
-    var leaving = !scanScreen.classList.contains("active") || /leave|fade-out|exit/.test(cls);
-    if (leaving && !scanLeaving && cachedBox){
-      scanLeaving = true;
-      show();
-      hideAfter(EXIT_MS);
-    } else if (!leaving){
-      scanLeaving = false;
-    }
-  }).observe(scanScreen, { attributes:true, attributeFilter:["class"] });
+  function onScanStill(){
+    return scanScreen.classList.contains("active") && (phone.dataset.current || "home") === "scan" &&
+      !/leave|fade-out|exit/.test(scanScreen.className || "");
+  }
+  // Leaving the scan page used to show the box here too (see above for why it no longer does).
 })();
 
 (function keyboardSafeLayer(){
@@ -7403,3 +10636,195 @@
     }, 200);
   });
 })();
+
+/**
+ * Inject the gift-card composer's display faces after boot. Idempotent and best-effort: the
+ * composer degrades to its fallback stack (see the RF list) if this never lands, which is the
+ * honest behaviour for a decorative font on a phone that is offline.
+ */
+var __hugCardFontsRequested = false;
+function loadCardComposerFonts() {
+  if (__hugCardFontsRequested) return;
+  __hugCardFontsRequested = true;
+  var run = function () {
+    try {
+      if (document.querySelector('link[data-hug-card-fonts]')) return;
+      var link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.setAttribute("data-hug-card-fonts", "1");
+      // Same families and the same display=swap as the markup used to carry — only the timing
+      // changed. Kept as one request so it stays a single cache entry.
+      link.href = "https://fonts.googleapis.com/css2?family=Abril+Fatface&family=Anton&family=Archivo+Black&family=Bebas+Neue&family=Bungee&family=Oswald:wght@600;700&family=Playfair+Display:wght@700;900&family=Press+Start+2P&family=Special+Elite&display=swap";
+      document.head.appendChild(link);
+    } catch (error) {}
+  };
+  // requestIdleCallback is absent in WKWebView before iOS 17.4, and this app supports older —
+  // so the timeout fallback is the live path on many devices, not a formality.
+  if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 3000 });
+  else setTimeout(run, 1200);
+}
+
+/**
+ * The factory-smoke SMIL animation only runs when it is actually on screen.
+ *
+ * index.html carries three <animate attributeName="d" repeatCount="indefinite"> elements on the
+ * home screen's factory impact icon. SMIL morphs the path geometry every frame, and each frame
+ * invalidates the SVG resource, which forces a style recalc and a layout. Measured over four
+ * seconds of IDLE with nothing touched, at 4x CPU throttle (roughly a mid-range phone):
+ *
+ *                        smoke running    smoke paused
+ *     layouts                      240              54
+ *     style recalcs                240              55
+ *     main thread busy             44%              9%
+ *
+ * So ~80% of everything this app did while sitting still was three wisps of decorative smoke.
+ * It is not a JS loop — requestAnimationFrame never fires for it — which is why profiling
+ * scripts and bundle sizes never found it.
+ *
+ * A `.screen` that is not `.active` is visibility:hidden but still laid out, and SMIL keeps
+ * running in it: the animation carried on at full cost on every OTHER screen in the app, where
+ * the factory is not even drawn. It also carried on with the tab/webview hidden.
+ *
+ * This does not change the animation where it IS visible — that is a design decision, not a
+ * bug, and it belongs to whoever drew it. It only stops paying for it where nobody can see it:
+ *
+ *   · home screen not active   -> paused
+ *   · document hidden          -> paused
+ *   · prefers-reduced-motion   -> paused outright, which the SMIL ignored (CSS
+ *                                 animation-play-state does not apply to SMIL)
+ *
+ * pauseAnimations()/unpauseAnimations() act on the SVG's own timeline, so the smoke resumes
+ * from where it stopped rather than snapping back to the start.
+ */
+function installImpactIconMotionGate() {
+  const svgs = Array.from(document.querySelectorAll(".impact-icon svg"))
+    .filter((svg) => svg.querySelector("animate, animateTransform, animateMotion"));
+  if (!svgs.length) return;
+  const homeScreen = document.querySelector('.screen[data-screen="home"]');
+  const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)");
+
+  // THE SMOKE IS STEPPED, NOT LEFT TO RUN FREE.
+  //
+  // SMIL renders at the display's refresh rate — 60fps here, 120 on a ProMotion device — and
+  // every frame rewrites the path geometry, forcing a style recalc and a layout. Nothing about
+  // slow drifting smoke needs sixty updates a second. pauseAnimations() freezes the timeline and
+  // setCurrentTime() still renders whatever instant you ask for, so the animation can be advanced
+  // by hand at a sane cadence: same artwork, same motion, same loop, fewer samples of it.
+  //
+  // Measured over 4s idle on home at 4x CPU throttle, with the frames verified to be genuinely
+  // changing by screenshotting the icon (a getAttribute('d') check does NOT work — SMIL animates
+  // the presentation value, not the DOM attribute, so it reads static even while running):
+  //
+  //     native 60fps   240 layouts   35% main thread
+  //     20fps          115 layouts   19%
+  //     15fps           99 layouts   14%     <- chosen
+  //     12fps           90 layouts   13%
+  //
+  // 15 was picked over 12 because the saving flattens out below it while the risk of visible
+  // stepping does not. This IS a change to how the animation looks, in principle — it is a lower
+  // temporal resolution of the same motion. It is one constant to change or delete if the smoke
+  // is judged to have lost anything.
+  //
+  // Owner, 2026-10-10: "move them all up to 60fps". Every icon now steps at 60 — the table
+  // above is the price (about the native row) and why it used to be 15. The other savings
+  // stay: only the panel in view moves, and nothing moves off the home screen or hidden.
+  // Food gets a deadline-based 60 fps clock that also handles 90/144 Hz displays.
+  // Keep the other icons on their existing shared clock.
+  const foodSvg = svgs.find((svg) => svg.closest('[data-cause="food"]'));
+  const steppedSvgs = svgs.filter((svg) => svg !== foodSvg);
+  const SMOKE_FPS = 60;
+  let foodFrame = null, foodPaint = null, foodDue = null;
+  const stopFood = () => {
+    if (foodFrame !== null) cancelAnimationFrame(foodFrame);
+    foodFrame = null; foodPaint = null; foodDue = null;
+  };
+  // While the row spins, or this icon is fading out under the impact detail, it holds still:
+  // nobody can see steam at spin speed, and redrawing a moving or fading layer every frame is
+  // what starved the page thread (owner, 2026-10-10: "harsh and jittery"). It resumes in place.
+  const iconHeld = (svg) => {
+    const r = window.__hugImpactRow;
+    return !!((r && r.spinning) || svg.closest('.home-content.detail-motion .impact-item:not(.is-picked)'));
+  };
+  const tickFood = (now) => {
+    if (foodPaint !== null && iconHeld(foodSvg)) { foodPaint = now; foodDue = now + 1000 / 60; foodFrame = requestAnimationFrame(tickFood); return; }
+    if (foodPaint === null) { foodPaint = now; foodDue = now + 1000 / 60; }
+    if (now >= foodDue - 0.5) {
+      try { foodSvg.setCurrentTime(foodSvg.getCurrentTime() + (now - foodPaint) / 1000); } catch (error) {}
+      foodPaint = now;
+      foodDue += Math.max(1, Math.floor((now - foodDue) / (1000 / 60)) + 1) * (1000 / 60);
+    }
+    foodFrame = requestAnimationFrame(tickFood);
+  };
+  const updateFood = (wanted) => {
+    const visible = foodSvg && !foodSvg.closest('.impact-panel[aria-hidden="true"], .impact-item[hidden]');
+    if (!wanted || !visible) { stopFood(); return; }
+    if (foodFrame === null) foodFrame = requestAnimationFrame(tickFood);
+  };
+  let stepFrame = null, lastStep = null;
+
+  let running = null;
+  const stop = () => {
+    if (stepFrame !== null) { cancelAnimationFrame(stepFrame); stepFrame = null; }
+    lastStep = null;
+    for (const svg of svgs) { try { svg.pauseAnimations(); } catch (error) {} }
+  };
+  // Stepped on the display's own frame clock, not a timer: a 60 Hz timer drifts against the
+  // screen and now and then lands two steps in one frame (a visible hitch). Each step moves the
+  // timeline by the real time since the last one, at most SMOKE_FPS steps a second, so a 120 Hz
+  // screen still gets 60 and a dropped frame does not slow the motion down.
+  const step = (now) => {
+    stepFrame = requestAnimationFrame(step);
+    if (lastStep === null) { lastStep = now; return; }
+    const dt = now - lastStep;
+    if (dt < 1000 / SMOKE_FPS - 1) return;
+    lastStep = now;
+    for (const svg of steppedSvgs) {
+      // Only the panel in view animates; the other one is aria-hidden / visibility:hidden.
+      if (svg.closest('.impact-panel[aria-hidden="true"], .impact-item[hidden]')) continue;
+      if (iconHeld(svg)) continue;                   // spinning row / fading out: hold still
+      try { svg.setCurrentTime(svg.getCurrentTime() + Math.min(dt, 250) / 1000); } catch (error) {}
+    }
+  };
+  const start = () => {
+    // Held paused throughout; the frame clock is what advances it. Driving a paused timeline by
+    // hand is the whole mechanism — unpausing would hand it back to SMIL's own clock.
+    for (const svg of svgs) { try { svg.pauseAnimations(); } catch (error) {} }
+    if (stepFrame !== null) return;
+    stepFrame = requestAnimationFrame(step);
+  };
+
+  // Not under the launch cover: nobody can see the icons move yet, and sixty redraws a second
+  // there were main-thread work the launch itself was waiting on (release gate, 2026-10-11: the
+  // cover lifted ~0.4 s later than main's). The clock starts when the page is shown.
+  const shown = () => !window.__hugBoot || window.__hugBoot.revealed;
+  const apply = () => {
+    const wanted =
+      shown() &&
+      !(reduceMotion && reduceMotion.matches) &&
+      document.visibilityState === "visible" &&
+      (!homeScreen || homeScreen.classList.contains("active"));
+    updateFood(wanted);
+    if (wanted === running) return;   // idempotent: never touch the timeline needlessly
+    running = wanted;
+    wanted ? start() : stop();
+  };
+  // Panel swaps and a disabled food cause must stop food's clock immediately.
+  if (foodSvg) {
+    const observer = new MutationObserver(apply);
+    const panel = foodSvg.closest('.impact-panel'), item = foodSvg.closest('.impact-item');
+    if (panel) observer.observe(panel, { attributes: true, attributeFilter: ['aria-hidden'] });
+    if (item) observer.observe(item, { attributes: true, attributeFilter: ['hidden'] });
+  }
+  apply();
+  if (window.__hugBoot && window.__hugBoot.onReveal) window.__hugBoot.onReveal(apply);
+  document.addEventListener("visibilitychange", apply);
+  if (reduceMotion) {
+    if (reduceMotion.addEventListener) reduceMotion.addEventListener("change", apply);
+    else if (reduceMotion.addListener) reduceMotion.addListener(apply);
+  }
+  // Screen changes are class toggles on the screen element, so watch that attribute rather than
+  // polling or hooking every navigation call site — one observer, fires only on a real switch.
+  if (homeScreen) {
+    new MutationObserver(apply).observe(homeScreen, { attributes: true, attributeFilter: ["class"] });
+  }
+}
