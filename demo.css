@@ -39,3 +39,9 @@
 .screen[data-screen="home"] .leader-head::before { background-color: #fff; }
 .impact-grid, .impact-viewport, .impact-panel, .impact-item, .impact-icon,
 .points-block { will-change: auto !important; }
+
+/* Safari, same cause as above: the leaderboard names shook a pixel on first load (before any
+   tap), as Safari redrew the list's own layers. Keep the list in the page's own layer too.
+   (The + expand still gets a layer while it moves: Web Animations promote it for the motion.) */
+.screen[data-screen="home"] .leader-list,
+.screen[data-screen="home"] .home-leader-rail { will-change: auto !important; }

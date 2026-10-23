@@ -5689,6 +5689,19 @@ window.hugTickify = window.hugTickify || function (root) {
     window.addEventListener("orientationchange", syncScrollWindowsOnViewportChange, { passive: true });
     window.visualViewport?.addEventListener("resize", syncScrollWindowsOnViewportChange, { passive: true });
 
+    // The first fit (above) runs while the page is still being put together, and the windows keep
+    // that answer until the viewport changes. If the layout moves after it, the answer is stale: in
+    // Safari inside the shop's phone it came out at the 132px minimum, a short leaderboard with a
+    // white band above the nav (owner, 2026-10-23). Fit again once the app is shown and once its
+    // web fonts are in. Where the first answer was right this changes nothing.
+    const refitScrollWindows = () => {
+      syncResponsiveScrollWindows(true);
+      syncHistoryFade();
+      syncLeaderFade();
+    };
+    if (window.__hugBoot && window.__hugBoot.onReveal) window.__hugBoot.onReveal(() => requestAnimationFrame(refitScrollWindows));
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => requestAnimationFrame(refitScrollWindows)).catch(() => {});
+
     // Leaderboard swipe uses the same global gesture engine as the rest of home.
     // Desktop trackpads often surface horizontal swipe as wheel deltaX rather than
     // pointer/touch drag, so bridge that input specifically for the leaderboard area.
