@@ -4938,7 +4938,22 @@ window.hugTickify = window.hugTickify || function (root) {
         let momentumId = 0;
         let momentumT = 0;
         let settleId = 0;
-        let wheelReset = 0;
+        // Wheel and trackpad input (desktop browsers; iOS never sends wheel events).
+        // One frame loop moves the list: a mouse notch glides to its target, a
+        // trackpad tracks 1:1, and input past an edge goes through a rubber-band curve
+        // and springs home when it stops. A stream = events less than WHEEL_IDLE_MS apart.
+        let wheelFrame = 0;
+        let wheelT = 0;
+        let wheelLast = 0;
+        let wheelPos = 0;
+        let wheelTarget = 0;
+        let wheelEase = false;   // a notch is gliding to wheelTarget
+        let wheelVel = 0;        // px per ms, recent input
+        let wheelMoved = false;  // this stream has scrolled the list
+        let wheelSwallow = 0;    // edge whose leftover flick momentum is ignored (1 top, -1 bottom)
+        let wheelEdge = 0;       // edge pulled past (1 top, -1 bottom)
+        let wheelOver = 0;       // input past that edge, before the rubber-band curve
+        let wheelSpring = null;  // { o0, v0, t0 }: the pull settling home
         let activePointerId = null;
         let activeTouchId = null;
         let releaseListenersBound = false;
@@ -5200,10 +5215,7 @@ window.hugTickify = window.hugTickify || function (root) {
         const start = (x, y) => {
           stopMomentum();
           stopSettle();
-          if (wheelReset) {
-            clearTimeout(wheelReset);
-            wheelReset = 0;
-          }
+          stopWheel();
           dragActive = true;
           dragAxis = null;
           startX = x;
@@ -5382,50 +5394,210 @@ window.hugTickify = window.hugTickify || function (root) {
         dragSurface.addEventListener("touchend", end, { passive: true });
         dragSurface.addEventListener("touchcancel", end, { passive: true });
 
+        const WHEEL_LINE_PX = 16;      // deltaMode 1 (lines), Firefox and some mice
+        const WHEEL_IDLE_MS = 90;      // no event for this long = the stream has ended
+        const WHEEL_GLIDE_MS = 70;     // time constant of a notch's glide
+        const WHEEL_SPRING_W = 14;     // rad/s, critically damped: settles in ~.36s like the CSS release
+        const WHEEL_BUMP_MAX = 1000;   // px/s into an edge: caps a bounce at ~12px of pull
+        const RUBBER_C = 0.55;         // the rubber-band constant iOS uses
+        const wheelOverMax = 4 * pullMax / RUBBER_C;  // the pull stops at 80% of pullMax
+        const rubber = over => pullMax * (1 - 1 / (over * RUBBER_C / pullMax + 1));
+        const springAt = now => {
+          const t = Math.max(0, now - wheelSpring.t0) / 1000;
+          const w = WHEEL_SPRING_W;
+          return (wheelSpring.o0 + (wheelSpring.v0 + w * wheelSpring.o0) * t) * Math.exp(-w * t);
+        };
+        const springVelAt = now => {
+          const t = Math.max(0, now - wheelSpring.t0) / 1000;
+          const w = WHEEL_SPRING_W;
+          return Math.exp(-w * t) * (wheelSpring.v0 - w * (wheelSpring.v0 + w * wheelSpring.o0) * t);
+        };
+        const edgeAllowed = edge => !(edge < 0 && disableBottomRubberBand);
+
+        function stopWheel() {
+          if (!wheelFrame) return;
+          cancelAnimationFrame(wheelFrame);
+          wheelFrame = 0;
+          wheelEase = false;
+          wheelEdge = 0;
+          wheelOver = 0;
+          wheelSpring = null;
+          list.style.removeProperty("transition");
+        }
+
+        // A bounce off an edge at `v0` px/s, added to one already running there.
+        const kickBump = (edge, v0) => {
+          if (!edgeAllowed(edge)) return;
+          const now = performance.now();
+          if (wheelSpring && wheelEdge === edge) {
+            const o = Math.max(0, springAt(now));
+            wheelSpring = { o0: o, v0: Math.min(WHEEL_BUMP_MAX, springVelAt(now) + v0), t0: now };
+          } else {
+            wheelSpring = { o0: wheelEdge === edge ? wheelOver : 0, v0: Math.min(WHEEL_BUMP_MAX, v0), t0: now };
+          }
+          wheelEdge = edge;
+          wheelOver = 0;
+        };
+
+        const wheelStep = now => {
+          wheelFrame = 0;
+          if ((phone.dataset.current || "home") !== activeScreen) {
+            wheelEase = false;
+            wheelEdge = 0;
+            wheelOver = 0;
+            wheelSpring = null;
+            setPull(0);
+            list.style.removeProperty("transition");
+            sync();
+            return;
+          }
+          const dt = wheelT ? Math.min(34, now - wheelT) : 16.67;
+          wheelT = now;
+          const max = Math.max(0, list.scrollHeight - list.clientHeight);
+          wheelTarget = Math.max(0, Math.min(max, wheelTarget));
+          const prevPos = wheelPos;
+          if (wheelEase) {
+            wheelPos += (wheelTarget - wheelPos) * (1 - Math.exp(-dt / WHEEL_GLIDE_MS));
+            if (Math.abs(wheelTarget - wheelPos) < 0.5) {
+              wheelPos = wheelTarget;
+              wheelEase = false;
+            }
+          } else {
+            wheelPos = wheelTarget;
+          }
+          wheelPos = Math.max(0, Math.min(max, wheelPos));
+          if (wheelPos !== prevPos) list.scrollTop = wheelPos;
+
+          let over = 0;
+          if (wheelSpring) {
+            over = springAt(now);
+            if (now - wheelSpring.t0 > 1000 / WHEEL_SPRING_W && Math.abs(over) < 0.25) {
+              wheelSpring = null;
+              wheelEdge = 0;
+              over = 0;
+            }
+          } else if (wheelEdge) {
+            over = wheelOver;
+          }
+          const nextPull = wheelEdge ? Math.round(wheelEdge * rubber(Math.max(0, over)) * 100) / 100 : 0;
+          const pullChanged = nextPull !== pull;
+          if (pullChanged) setPull(nextPull);
+          if (pullChanged || wheelPos !== prevPos) sync();
+
+          const idle = now - wheelLast > WHEEL_IDLE_MS;
+          // The input stopped while pulling past an edge: spring home from where it is.
+          if (idle && !wheelSpring && wheelEdge && wheelOver > 0) {
+            wheelSpring = { o0: wheelOver, v0: 0, t0: now };
+            wheelOver = 0;
+          }
+          if (wheelEase || wheelSpring || !idle) {
+            wheelFrame = requestAnimationFrame(wheelStep);
+            return;
+          }
+          wheelT = 0;
+          wheelEdge = 0;
+          wheelOver = 0;
+          if (pull !== 0) {
+            setPull(0);
+            sync();
+          }
+          list.style.removeProperty("transition");
+        };
+
+        const runWheel = () => {
+          if (wheelFrame) return;
+          wheelT = 0;
+          list.style.transition = "none";   // this loop moves the pull every frame
+          wheelFrame = requestAnimationFrame(wheelStep);
+        };
+
         if (wheelFallback) {
           dragSurface.addEventListener("wheel", event => {
             if ((phone.dataset.current || "home") !== activeScreen) return;
-            const delta = event.deltaY;
+            let delta = event.deltaY;
             if (Math.abs(delta) < 0.01) return;
             event.stopPropagation();
             event.preventDefault();
             stopMomentum();
-            if (wheelReset) {
-              clearTimeout(wheelReset);
-              wheelReset = 0;
-            }
+            stopSettle();
+            if (event.deltaMode === 1) delta *= WHEEL_LINE_PX;
+            else if (event.deltaMode === 2) delta *= list.clientHeight;
+            const now = performance.now();
+            const gap = now - wheelLast;
             const max = Math.max(0, list.scrollHeight - list.clientHeight);
-            const next = list.scrollTop + delta;
-            if (next < 0) {
-              list.scrollTop = 0;
-              setPull(Math.min(pullMax, Math.pow(-next, pullPow) * pullTopMul));
-              sync();
-              wheelReset = setTimeout(() => {
-                setPull(0);
-                sync();
-                wheelReset = 0;
-              }, 120);
-              return;
+            if (gap > WHEEL_IDLE_MS) {
+              // A new stream starts from where the list really is, and from any pull still settling.
+              if (!wheelEase) wheelPos = wheelTarget = list.scrollTop;
+              wheelMoved = false;
+              wheelSwallow = 0;
+              if (wheelSpring) {
+                wheelOver = Math.max(0, springAt(now));
+                wheelSpring = null;
+              }
             }
-            if (next > max) {
-              list.scrollTop = max;
-              if (disableBottomRubberBand) {
-                setPull(0);
-                sync();
+            wheelVel = gap > 50 ? delta / 16.67 : wheelVel * 0.5 + (delta / Math.max(8, gap)) * 0.5;
+            wheelLast = now;
+            runWheel();
+
+            const dir = delta > 0 ? -1 : 1;   // the edge this input pushes towards
+            // A mouse notch: lines or pages, or a big pixel step on its own.
+            const step = event.deltaMode !== 0 || (Math.abs(delta) >= 40 && gap > 40);
+
+            if (wheelSwallow === dir) return;  // the rest of a flick that already bounced
+            wheelSwallow = 0;
+
+            if (wheelEdge) {
+              if (wheelSpring) {
+                // A bounce is settling. More input towards that edge in this stream is
+                // momentum: ignore it. Input away from it scrolls while the bounce settles.
+                if (dir === wheelEdge) {
+                  if (step) kickBump(dir, Math.abs(delta) * 5);
+                  else wheelSwallow = dir;
+                  return;
+                }
+              } else {
+                // Pulling past an edge: more pull, or give it back before scrolling again.
+                const d = Math.abs(delta);
+                if (dir === wheelEdge) {
+                  wheelOver = Math.min(wheelOverMax, wheelOver + d);
+                  return;
+                }
+                wheelOver -= d;
+                if (wheelOver > 0) return;
+                delta = wheelEdge * -wheelOver;
+                wheelOver = 0;
+                wheelEdge = 0;
+              }
+            }
+
+            const atEdge = dir > 0 ? wheelTarget <= 0.5 : wheelTarget >= max - 0.5;
+            if (step) {
+              if (atEdge && !wheelEase) {
+                kickBump(dir, Math.abs(delta) * 5);   // a notch against the edge: a small nudge
                 return;
               }
-              setPull(-Math.min(pullMax, Math.pow(next - max, pullPow) * pullBottomMul));
-              sync();
-              wheelReset = setTimeout(() => {
-                setPull(0);
-                sync();
-                wheelReset = 0;
-              }, 120);
+              wheelTarget = Math.max(0, Math.min(max, wheelTarget + delta));
+              wheelEase = true;
+              wheelMoved = true;
               return;
             }
-            setPull(0);
-            list.scrollTop = next;
-            sync();
+            if (atEdge && !wheelMoved && !wheelEase) {
+              // The stream began at this edge: a deliberate pull, followed through the rubber band.
+              if (!edgeAllowed(dir)) return;
+              wheelEdge = dir;
+              wheelOver = Math.min(wheelOverMax, Math.abs(delta));
+              return;
+            }
+            const next = wheelTarget + delta;
+            if (next < 0 || next > max) {
+              // A flick ran into the edge: bounce with its speed, then ignore its momentum.
+              wheelTarget = next < 0 ? 0 : max;
+              kickBump(dir, Math.abs(wheelVel) * 1000);
+              wheelSwallow = dir;
+            } else {
+              wheelTarget = next;
+            }
+            wheelMoved = true;
           }, { passive: false });
         }
       });
