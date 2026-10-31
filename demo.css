@@ -93,3 +93,11 @@
   .screen:is([data-screen="home"], [data-screen="account"]) {
     --frost-nav-h: calc(74px + var(--safe-bottom));
   }
+
+/* The story adds layers to the row as a tap lands. Under this demo's scale a layer draws about 1px
+   lower than the same thing painted in the row, so the whole row hopped on the first tap and hopped
+   back when the row next moved. Keep every layer the story would ask for from the start: nothing
+   changes on a tap, so nothing moves. */
+.home-content .impact-item,
+.home-content .impact-dots { will-change: opacity; }
+.impact-item .impact-icon { will-change: transform; }
