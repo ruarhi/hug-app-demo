@@ -28,24 +28,68 @@
 .screen[data-screen="settings"] .proto-row,
 .screen[data-screen="settings"] .account-controls { display: none !important; }
 
-/* Safari, inside the shop's 304px phone: the whole app is shrunk by a scale transform (--fit is
-   about .77 there), and Safari draws the edges of the layers inside it at fractional pixels.
-   - The leaderboard's scroll box drew a 1px black line along its top edge, just above
-     "LEADERBOARD" (owner, 2026-10-20, seen in Safari). The head's band already spans that edge;
-     paint it white (the page is white there anyway), so the seam is covered.
-   - The top row's icons moved up and down a pixel as Safari redrew their layers. Keep them in
-     the page's own layer, so they are drawn in the same place every time.
-   Demo only: on a phone the app runs at full size, with no scale. */
+/* Safari: the leaderboard's scroll box drew a thin dark line along its top edge, just above
+   "LEADERBOARD" (owner, 2026-10-20). The head's band spans that edge; paint it white. */
 .screen[data-screen="home"] .leader-head::before { background-color: #fff; }
-.impact-grid, .impact-viewport, .impact-panel, .impact-item, .impact-icon,
-.points-block { will-change: auto !important; }
 
-/* Safari, same cause as above: the leaderboard names shook a pixel on first load (before any
-   tap), as Safari redrew the list's own layers. Keep the list in the page's own layer too. */
-.screen[data-screen="home"] .leader-list { will-change: auto !important; }
-/* But NOT the board around it (.home-leader-rail): it keeps the layer the app gives it all the
-   time. Without it, a fade or the + expand made a layer for the board only while it moved, and
-   Safari drew the page a pixel off each time one was made or dropped: tapping a cause made the
-   tokens and the leaderboard jolt up (as the fade began) and back down (as it ended) (owner,
-   2026-10-30). Measured in Safari (iOS 26.5 simulator) at the shop's size: the tokens block moved
-   1.1 device px and the board 0.4 with the rail unlayered, 0 with it layered; 0 on first load too. */
+/* The shop shows this at true phone size (393 x 852) and shrinks the whole frame as one picture
+   (hug-theme sections/hug-rewards.liquid). Shrinking the app from inside left everything between
+   pixels, and Safari rounded it differently as things moved: icons hopped, the page jolted and the
+   leaderboard stuttered (owner, 2026-10-30 and 31).
+
+   The frame keeps the spacing the app uses on a screen under 790px tall, which is what this demo
+   has always shown, so all five leaderboard rows fit: styles.css, its @media (max-height: 790px)
+   blocks, applied here for good. Copy them again if those blocks change. */
+  .screen {
+    grid-template-rows:
+      calc(94px + var(--safe-top))
+      1fr
+      calc(74px + var(--safe-bottom));
+  }
+
+  .top {
+    padding-top: calc(20px + var(--safe-top));
+  }
+
+  .bag-button {
+    top: calc(20px + var(--safe-top));             /* keep bag aligned with the shorter header padding */
+  }
+
+  .logo {
+    font-size: 61px;
+  }
+
+  .global-logo,
+  .logo {
+    top: calc(13px + var(--safe-top));   /* keep logo aligned with the shorter compact header */
+  }
+
+  .impact-grid {
+    margin-top: 8px;
+  }
+
+  .points-block {
+    margin-top: 28px;
+  }
+
+  .points {
+    font-size: 82px;
+  }
+
+  .leaderboard {
+    margin-top: 42px;
+  }
+
+  .bottom-nav {
+    padding-bottom: calc(16px + var(--safe-bottom));
+  }
+
+  .screen:is([data-screen="settings"], [data-screen="checkout"], [data-screen="profile"], [data-screen="card"],
+             [data-screen="impact"], [data-screen="giving"], [data-screen="purchases"], [data-screen="linked"]) {
+    --frost-head-h: calc(94px + var(--safe-top));
+    --frost-nav-h: calc(74px + var(--safe-bottom));
+  }
+
+  .screen:is([data-screen="home"], [data-screen="account"]) {
+    --frost-nav-h: calc(74px + var(--safe-bottom));
+  }
