@@ -5906,6 +5906,32 @@ window.hugTickify = window.hugTickify || function (root) {
       showScreen(target);
     };
 
+    // A sideways trackpad swipe is never perfectly level. Its small up-and-down part scrolled the
+    // leaderboard, and on the website it passed up to the shop's page, moving the whole phone
+    // (owner, 2026-10-31: "as you swipe it is moving up and down a touch"). So each stream of wheel
+    // events keeps the direction it started in until it stops.
+    let wheelAxis = "";
+    let wheelSumX = 0;
+    let wheelSumY = 0;
+    let wheelAxisTimer = 0;
+    phone.addEventListener("wheel", event => {
+      if (event.ctrlKey) return;
+      clearTimeout(wheelAxisTimer);
+      wheelAxisTimer = setTimeout(() => {
+        wheelAxis = "";
+        wheelSumX = 0;
+        wheelSumY = 0;
+      }, 160);
+      if (!wheelAxis) {
+        wheelSumX += Math.abs(event.deltaX);
+        wheelSumY += Math.abs(event.deltaY);
+        if (wheelSumX + wheelSumY >= 3) wheelAxis = wheelSumX > wheelSumY ? "x" : "y";
+      }
+      if (wheelAxis === "y") return;
+      event.preventDefault();
+      event.stopPropagation();   // the lists below never see it; the swipe listener next to this one does
+    }, { capture: true, passive: false });
+
     phone.addEventListener("wheel", event => {
       if ((phone.dataset.current || "home") !== "home") return;
       if (event.ctrlKey) return;
